@@ -51,13 +51,26 @@ export class InterviewSession extends DurableObject {
         try {
             const data = JSON.parse(text);
 
-            if (data.type === 'message') {
-                // Restore history from storage if needed (naive in-memory for now, assuming object stays alive)
-                // Ideally: this.history = await this.state.storage.get("history") || [];
-
+            if (data.type === 'init') {
+                // Check if we have history. 
+                if (this.history.length === 0) {
+                    // In a real app, we'd fetch docs from R2/Context here using a Context Manager.
+                    // For now, we simulate a "Cold Start" with a broad opening question.
+                    const opening = "Hi there! I've been looking forward to helping you write your story. To get started, could you tell me a little bit about where you grew up?";
+                    this.history.push({ role: 'assistant', content: opening });
+                    ws.send(JSON.stringify({ type: 'response', content: opening }));
+                } else {
+                    // Send history so client can rebuild UI
+                    // We send them as individual messages or a bulk 'history' event. 
+                    // For simplicity in this demo, we'll re-send them.
+                    this.history.forEach(msg => {
+                        ws.send(JSON.stringify({ type: 'response', content: msg.content, role: msg.role }));
+                    });
+                }
+            } else if (data.type === 'message') {
                 this.history.push({ role: 'user', content: data.content });
 
-                // 1. Generate Interviewer Response (Gemini 3 Flash)
+                // 1. Generate Interviewer Response (Gemini)
                 const aiResponse = await this.generateResponse(this.history);
 
                 this.history.push({ role: 'assistant', content: aiResponse });
@@ -68,17 +81,23 @@ export class InterviewSession extends DurableObject {
                     content: aiResponse
                 }));
 
-                // 3. Draft/Outline Update (Background or parallel)
-                // We can trigger a separate AI call here to update the draft based on new info
-                // await this.updateDraft(); 
+                // 3. Draft/Outline Update
+                // Simulate occasional writing updates after every few messages
+                if (this.history.length % 4 === 0) {
+                    ws.send(JSON.stringify({
+                        type: 'draft_update',
+                        content: `\n## New Chapter Insight\n*Reflecting on the early years in ${data.content.substring(0, 15)}...*`
+                    }));
+                }
             }
         } catch (err) {
+            console.error(err);
             ws.send(JSON.stringify({ type: 'error', content: 'Failed to process message' }));
         }
     }
 
     async closeOrErrorHandler(ws: WebSocket) {
-        // Save state
+        // Save state to disk so it persists across DO evictions
         await this.state.storage.put("history", this.history);
     }
 
@@ -91,20 +110,35 @@ export class InterviewSession extends DurableObject {
     }
 
     async generateResponse(history: ThreadMessage[]): Promise<string> {
-        // Basic Gemini Integration via Cloudflare AI Gateway
-        // Note: 'gemini-3-flash' ID might vary, usually it's just 'google/gemini-pro' or similar alias in Workers AI,
-        // but for Gateway we use the REST API.
-        // If using Workers AI binding directly:
-
         try {
-            // Placeholder for actual AI call
-            // const response = await this.env.AI.run('@cf/google/gemini-2.0-flash-exp', { messages: history });
-            // return response.response;
+            // Using Cloudflare Workers AI
+            const messages = history.map(h => ({ role: h.role, content: h.content }));
 
-            return "I am simulating a response for now. Gemini integration pending.";
+            const systemPrompt = {
+                role: 'system',
+                content: "You are a warm, empathetic, and skilled biographer. Your goal is to interview the user to write their autobiography. Ask insightful, open-ended questions. Follow up on interesting details. Keep the tone conversational and supportive. Do not just list questions; engage like a real person."
+            };
+
+            // Attempt 1: Gemini
+            try {
+                const response: any = await this.env.AI.run('@cf/google/gemini-2.0-flash-exp', {
+                    messages: [systemPrompt, ...messages]
+                });
+                if (response && response.response) return response.response;
+            } catch (innerErr) {
+                console.warn("Gemini failed, trying fallback...", innerErr);
+                // Attempt 2: Llama 3 (often more widely available without specific terms)
+                const response: any = await this.env.AI.run('@cf/meta/llama-3-8b-instruct', {
+                    messages: [systemPrompt, ...messages]
+                });
+                if (response && response.response) return response.response;
+            }
+
+            return "I'm listening. Please go on.";
         } catch (e) {
             console.error("AI Error", e);
-            return "Sorry, I am having trouble thinking right now.";
+            // Return actual error to user for debugging
+            return `[System Error] I cannot think right now. Details: ${(e as Error).message}`;
         }
     }
 }

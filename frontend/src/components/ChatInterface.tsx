@@ -13,9 +13,7 @@ interface ChatInterfaceProps {
 }
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ sessionId, onDraftUpdate }) => {
-    const [messages, setMessages] = useState<Message[]>([
-        { role: 'assistant', content: "Hello! I'm here to help write your autobiography. Where should we start?" }
-    ]);
+    const [messages, setMessages] = useState<Message[]>([]);
     const [input, setInput] = useState('');
     const [connected, setConnected] = useState(false);
     const ws = useRef<WebSocket | null>(null);
@@ -32,6 +30,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ sessionId, onDraft
         ws.current.onopen = () => {
             console.log('Connected to Interview Session');
             setConnected(true);
+            ws.current?.send(JSON.stringify({ type: 'init' }));
         };
 
         ws.current.onmessage = (event) => {

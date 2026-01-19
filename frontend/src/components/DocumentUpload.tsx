@@ -70,23 +70,49 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({ userId, onUpload
                     multiple
                     accept=".pdf"
                     onChange={onFileChange}
-                    className="block w-full text-sm text-slate-500
-                    file:mr-4 file:py-2 file:px-4
-                    file:rounded-full file:border-0
-                    file:text-sm file:font-semibold
-                    file:bg-primary file:text-white
-                    hover:file:bg-slate-700"
+                    className="hidden"
+                    id="file-input-visible"
                 />
-                <p className="mt-2 text-xs text-slate-400">{files.length} files selected</p>
+                <p className="text-sm text-slate-500">
+                    {files.length > 0 ? `${files.length} files selected` : 'Drag & drop or Click to select'}
+                </p>
+                {uploading && (
+                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mt-4">
+                        <div className="bg-primary h-full transition-all duration-300 animate-pulse" style={{ width: `100%` }} />
+                    </div>
+                )}
             </div>
 
-            <button
-                onClick={handleUpload}
-                disabled={files.length === 0 || uploading}
-                className="mt-6 w-full bg-accent text-white py-3 rounded-lg font-semibold hover:bg-blue-600 disabled:opacity-50 transition-all"
-            >
-                {uploading ? "Processing..." : "Upload & Analyze"}
-            </button>
+            <div className="flex gap-4 mt-6">
+                <button
+                    onClick={() => document.getElementById('file-input')?.click()}
+                    disabled={uploading}
+                    className="flex-1 px-6 py-2 bg-primary text-white rounded-full hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                >
+                    {uploading ? 'Processing...' : 'Select PDF'}
+                </button>
+                <button
+                    onClick={handleUpload}
+                    disabled={files.length === 0 || uploading}
+                    className="flex-1 px-6 py-2 bg-accent text-white rounded-full hover:bg-blue-600 disabled:opacity-50 transition-colors"
+                >
+                    Upload & Analyze
+                </button>
+                <button
+                    onClick={onUploadComplete}
+                    className="px-6 py-2 bg-slate-200 text-slate-700 rounded-full hover:bg-slate-300 transition-colors"
+                >
+                    Skip
+                </button>
+            </div>
+            <input
+                id="file-input"
+                type="file"
+                multiple
+                accept=".pdf"
+                className="hidden"
+                onChange={onFileChange}
+            />
         </div>
     );
 };

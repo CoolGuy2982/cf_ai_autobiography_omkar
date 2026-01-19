@@ -8,7 +8,7 @@ enabled = true
 [[d1_databases]]
 binding = "DB"
 database_name = "autobiography-db"
-database_id = "autobiography-db-id" # Placeholder, will need to be updated after creation
+database_id = "c711cf60-c959-4de0-a95e-aa831e2cd6d8" # Placeholder, will need to be updated after creation
 
 [[r2_buckets]]
 binding = "BUCKET"

@@ -31,7 +31,12 @@ app.get('/api/session/:id/connect', async (c) => {
     const idObj = c.env.INTERVIEW_SESSION.idFromName(id);
     const stub = c.env.INTERVIEW_SESSION.get(idObj);
 
-    return stub.fetch(c.req.raw);
+    // Rewrite URL to /websocket for the DO
+    const url = new URL(c.req.url);
+    url.pathname = "/websocket";
+    const request = new Request(url, c.req.raw);
+
+    return stub.fetch(request);
 });
 
 // User Onboarding Route
@@ -93,7 +98,9 @@ app.post('/api/books/start', async (c) => {
             }
         }
 
-        if (!context) return c.json({ error: 'No documents found for user. Please upload resume/info first.' }, 400);
+        if (!context) {
+            context = "User has not uploaded any documents yet. Start with a generic autobiographical structure.";
+        }
 
         // 2. Generate Outline using Gemini 3 Flash
         // We'll use the AI binding.
