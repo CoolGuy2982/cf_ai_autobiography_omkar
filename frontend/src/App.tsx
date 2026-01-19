@@ -3,6 +3,7 @@ import { Onboarding } from './components/Onboarding';
 import { DocumentUpload } from './components/DocumentUpload';
 import { Workspace } from './components/Workspace';
 import { Loader2 } from 'lucide-react';
+import { API_BASE_URL } from './utils/api';
 
 function App() {
   const [phase, setPhase] = useState<'onboarding' | 'upload' | 'creating' | 'workspace'>('onboarding');
@@ -12,7 +13,7 @@ function App() {
 
   const handleOnboardingComplete = async (data: { name: string; dob: string; birthLocation: { lat: number; lng: number } }) => {
     try {
-      const res = await fetch('http://localhost:8787/api/onboarding', {
+      const res = await fetch(`${API_BASE_URL}/api/onboarding`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
@@ -36,7 +37,7 @@ function App() {
     setPhase('creating');
     try {
       // Start Book / Generate Outline
-      const res = await fetch('http://localhost:8787/api/books/start', {
+      const res = await fetch(`${API_BASE_URL}/api/books/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId, title: 'My Autobiography' })
@@ -44,7 +45,7 @@ function App() {
       const data = await res.json();
 
       if (data.success) {
-        setSessionId(data.bookId); // Using bookId as sessionId for simplicity
+        setSessionId(data.bookId); 
         setBookTitle(data.outline.title);
         setPhase('workspace');
       } else {

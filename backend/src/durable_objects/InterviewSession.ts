@@ -1,8 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 
 interface Env {
-    AI: any; // We'll refine this type
     DB: D1Database;
+    CF_ACCOUNT_ID: string;
+    CF_GATEWAY_ID: string;
+    GEMINI_API_KEY: string;
+    CF_AIG_TOKEN?: string;
 }
 
 interface ThreadMessage {
@@ -14,18 +17,31 @@ export class InterviewSession extends DurableObject {
     state: DurableObjectState;
     env: Env;
     history: ThreadMessage[] = [];
-    currentDraft: string = "";
+    bookId: string = "";
+    bookContext: any = null;
 
     constructor(state: DurableObjectState, env: Env) {
         super(state, env);
         this.state = state;
         this.env = env;
+        
+        this.state.blockConcurrencyWhile(async () => {
+            const stored = await this.state.storage.get<{ history: ThreadMessage[], bookId: string }>(["history", "bookId"]);
+            if (stored.history) this.history = stored.history;
+            if (stored.bookId) this.bookId = stored.bookId;
+        });
     }
 
     async fetch(request: Request): Promise<Response> {
         const url = new URL(request.url);
 
         if (url.pathname === "/websocket") {
+            const queryBookId = url.searchParams.get("bookId");
+            if (queryBookId) {
+                this.bookId = queryBookId;
+                await this.state.storage.put("bookId", this.bookId);
+            }
+
             const upgradeHeader = request.headers.get("Upgrade");
             if (!upgradeHeader || upgradeHeader !== "websocket") {
                 return new Response("Expected Upgrade: websocket", { status: 426 });
@@ -52,17 +68,27 @@ export class InterviewSession extends DurableObject {
             const data = JSON.parse(text);
 
             if (data.type === 'init') {
-                // Check if we have history. 
                 if (this.history.length === 0) {
-                    // In a real app, we'd fetch docs from R2/Context here using a Context Manager.
-                    // For now, we simulate a "Cold Start" with a broad opening question.
-                    const opening = "Hi there! I've been looking forward to helping you write your story. To get started, could you tell me a little bit about where you grew up?";
+                    let opening = "I'm ready to help you write your story. Where should we begin?";
+                    
+                    if (this.bookId) {
+                        try {
+                            const book = await this.env.DB.prepare("SELECT outline_json FROM books WHERE id = ?")
+                                .bind(this.bookId).first();
+                            
+                            if (book && book.outline_json) {
+                                this.bookContext = JSON.parse(book.outline_json as string);
+                                const firstChapter = this.bookContext.chapters[0];
+                                opening = `Hi! I've reviewed your documents and prepared an outline. Let's start with **${firstChapter.title}**. ${firstChapter.summary}. \n\nWhat is your earliest memory related to this?`;
+                            }
+                        } catch (e) {
+                            console.error("Failed to load book context", e);
+                        }
+                    }
+
                     this.history.push({ role: 'assistant', content: opening });
                     ws.send(JSON.stringify({ type: 'response', content: opening }));
                 } else {
-                    // Send history so client can rebuild UI
-                    // We send them as individual messages or a bulk 'history' event. 
-                    // For simplicity in this demo, we'll re-send them.
                     this.history.forEach(msg => {
                         ws.send(JSON.stringify({ type: 'response', content: msg.content, role: msg.role }));
                     });
@@ -70,25 +96,18 @@ export class InterviewSession extends DurableObject {
             } else if (data.type === 'message') {
                 this.history.push({ role: 'user', content: data.content });
 
-                // 1. Generate Interviewer Response (Gemini)
+                // 1. Generate Response
                 const aiResponse = await this.generateResponse(this.history);
-
                 this.history.push({ role: 'assistant', content: aiResponse });
 
-                // 2. Send back to client
-                ws.send(JSON.stringify({
-                    type: 'response',
-                    content: aiResponse
-                }));
+                ws.send(JSON.stringify({ type: 'response', content: aiResponse }));
 
-                // 3. Draft/Outline Update
-                // Simulate occasional writing updates after every few messages
-                if (this.history.length % 4 === 0) {
-                    ws.send(JSON.stringify({
-                        type: 'draft_update',
-                        content: `\n## New Chapter Insight\n*Reflecting on the early years in ${data.content.substring(0, 15)}...*`
-                    }));
+                // 2. Draft Update
+                if (this.history.length % 3 === 0) {
+                   await this.generateDraftUpdate(ws);
                 }
+
+                await this.state.storage.put("history", this.history);
             }
         } catch (err) {
             console.error(err);
@@ -96,49 +115,80 @@ export class InterviewSession extends DurableObject {
         }
     }
 
-    async closeOrErrorHandler(ws: WebSocket) {
-        // Save state to disk so it persists across DO evictions
-        await this.state.storage.put("history", this.history);
-    }
+    // Helper: Call AI Gateway
+    async callGemini(messages: ThreadMessage[], systemInstruction?: string) {
+        const model = "gemini-2.5-flash"; // Standardizing on 2.0-flash
+        // FIX: Using v1beta
+        const url = `https://gateway.ai.cloudflare.com/v1/${this.env.CF_ACCOUNT_ID}/${this.env.CF_GATEWAY_ID}/google-ai-studio/v1beta/models/${model}:generateContent`;
 
-    async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean) {
-        await this.closeOrErrorHandler(ws);
-    }
+        const geminiContents = messages
+            .filter(m => m.role !== 'system')
+            .map(m => ({
+                role: m.role === 'assistant' ? 'model' : 'user',
+                parts: [{ text: m.content }]
+            }));
 
-    async webSocketError(ws: WebSocket, error: any) {
-        await this.closeOrErrorHandler(ws);
+        const body: any = { contents: geminiContents };
+        
+        // FIX: snake_case for REST API
+        if (systemInstruction) {
+            body.system_instruction = { parts: [{ text: systemInstruction }] };
+        }
+
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': this.env.GEMINI_API_KEY
+        };
+
+        if (this.env.CF_AIG_TOKEN) {
+            headers['cf-aig-authorization'] = `Bearer ${this.env.CF_AIG_TOKEN}`;
+        }
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body)
+        });
+
+        if (!response.ok) {
+            const txt = await response.text();
+            throw new Error(`AI Gateway Error: ${txt}`);
+        }
+
+        const data: any = await response.json();
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     }
 
     async generateResponse(history: ThreadMessage[]): Promise<string> {
         try {
-            // Using Cloudflare Workers AI
-            const messages = history.map(h => ({ role: h.role, content: h.content }));
-
-            const systemPrompt = {
-                role: 'system',
-                content: "You are a warm, empathetic, and skilled biographer. Your goal is to interview the user to write their autobiography. Ask insightful, open-ended questions. Follow up on interesting details. Keep the tone conversational and supportive. Do not just list questions; engage like a real person."
-            };
-
-            // Attempt 1: Gemini
-            try {
-                const response: any = await this.env.AI.run('@cf/google/gemini-2.0-flash-exp', {
-                    messages: [systemPrompt, ...messages]
-                });
-                if (response && response.response) return response.response;
-            } catch (innerErr) {
-                console.warn("Gemini failed, trying fallback...", innerErr);
-                // Attempt 2: Llama 3 (often more widely available without specific terms)
-                const response: any = await this.env.AI.run('@cf/meta/llama-3-8b-instruct', {
-                    messages: [systemPrompt, ...messages]
-                });
-                if (response && response.response) return response.response;
+            let systemContent = "You are a warm, empathetic biographer interviewing the user for their autobiography. Ask one question at a time. Be curious and conversational.";
+            if (this.bookContext) {
+                const currentChapter = this.bookContext.chapters[0];
+                systemContent += `\nCurrent Goal: Interview user about Chapter 1: "${currentChapter.title}" - ${currentChapter.summary}. Stick to this topic until exhausted.`;
             }
 
-            return "I'm listening. Please go on.";
+            return await this.callGemini(history, systemContent);
         } catch (e) {
             console.error("AI Error", e);
-            // Return actual error to user for debugging
-            return `[System Error] I cannot think right now. Details: ${(e as Error).message}`;
+            return "I'm listening. Please go on.";
+        }
+    }
+
+    async generateDraftUpdate(ws: WebSocket) {
+        try {
+             const recentChat = this.history.slice(-6).map(m => `${m.role}: ${m.content}`).join("\n");
+             const prompt = `Based on this interview snippet, write a paragraph of autobiography in the first person:\n${recentChat}`;
+             
+             const text = await this.callGemini([{ role: 'user', content: prompt }]);
+
+             if (text) {
+                ws.send(JSON.stringify({
+                    type: 'draft_update',
+                    content: `\n${text}\n`
+                }));
+            }
+        } catch (e) {
+            console.error("Drafting failed", e);
         }
     }
 }

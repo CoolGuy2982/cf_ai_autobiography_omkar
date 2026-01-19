@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { API_BASE_URL } from '../utils/api';
 
 // Set PDF worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
@@ -34,7 +35,7 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({ userId, onUpload
             for (const file of files) {
                 const text = await extractText(file);
                 // Send to Backend
-                await fetch('http://localhost:8787/api/documents', {
+                await fetch(`${API_BASE_URL}/api/documents`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({

@@ -8,14 +8,11 @@ enabled = true
 [[d1_databases]]
 binding = "DB"
 database_name = "autobiography-db"
-database_id = "c711cf60-c959-4de0-a95e-aa831e2cd6d8" # Placeholder, will need to be updated after creation
+database_id = "c711cf60-c959-4de0-a95e-aa831e2cd6d8" # Ensure this matches your real D1 ID
 
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "autobiography-files"
-
-[ai]
-binding = "AI"
 
 [[durable_objects.bindings]]
 name = "INTERVIEW_SESSION"
@@ -23,7 +20,7 @@ class_name = "InterviewSession"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["InterviewSession"]
+new_sqlite_classes = ["InterviewSession"] # CHANGED: new_classes -> new_sqlite_classes
 
 [vars]
-# Add any environment variables here
+# Secrets are loaded safely from .dev.vars (local) or Cloudflare Secrets (deploy)

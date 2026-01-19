@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Send, User, Bot } from 'lucide-react';
-import { cn } from '../utils/cn'; // Need to create utility
+import { cn } from '../utils/cn'; 
+import { getWsUrl } from '../utils/api';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -20,10 +21,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ sessionId, onDraft
     const scrollRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        // Connect to WebSocket
-        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        // In local dev, Vite is 5173, backend is 8787.
-        const wsUrl = `${protocol}://localhost:8787/api/session/${sessionId}/connect`;
+        // Use the utility to get the correct WS/WSS url
+        const wsUrl = getWsUrl(sessionId);
 
         ws.current = new WebSocket(wsUrl);
 
