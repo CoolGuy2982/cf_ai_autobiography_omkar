@@ -1,0 +1,29 @@
+name = "cf-ai-autobiography-backend"
+main = "src/index.ts"
+compatibility_date = "2025-01-09"
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "autobiography-db"
+database_id = "autobiography-db-id" # Placeholder, will need to be updated after creation
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "autobiography-files"
+
+[ai]
+binding = "AI"
+
+[[durable_objects.bindings]]
+name = "INTERVIEW_SESSION"
+class_name = "InterviewSession"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["InterviewSession"]
+
+[vars]
+# Add any environment variables here

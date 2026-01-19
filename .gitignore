@@ -1,0 +1,32 @@
+# General
+node_modules/
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment Variables
+.env
+.env.*
+! .env.example
+
+# Editor
+.vscode/
+.idea/
+
+# Cloudflare Workers & Wrangler
+.wrangler/
+.d1/
+
+# Frontend / Vite
+dist/
+dist-ssr/
+*.local
+.npmrc
+
+# Testing
+coverage/
+
+# OS
+Thumbs.db
