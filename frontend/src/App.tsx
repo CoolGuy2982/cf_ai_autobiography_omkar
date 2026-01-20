@@ -22,7 +22,6 @@ function App() {
 
       if (result.success) {
         setUserId(result.userId);
-        console.log("Onboarding complete, user created:", result.userId);
         setPhase('upload');
       } else {
         alert("Failed to create user: " + (result.error || "Unknown error"));
@@ -36,7 +35,6 @@ function App() {
   const handleUploadComplete = async () => {
     setPhase('creating');
     try {
-      // Start Book / Generate Outline
       const res = await fetch(`${API_BASE_URL}/api/books/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -60,7 +58,9 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
+    // CHANGED: Removed bg-slate-50 and text-slate-900. Added text-stone-200.
+    // This allows the "body" wood texture to show through.
+    <div className="min-h-screen font-sans text-stone-200 selection:bg-accent/30">
       {phase === 'onboarding' && <Onboarding onComplete={handleOnboardingComplete} />}
 
       {phase === 'upload' && userId && (
@@ -68,10 +68,10 @@ function App() {
       )}
 
       {phase === 'creating' && (
-        <div className="flex flex-col items-center justify-center h-screen">
-          <Loader2 className="w-10 h-10 animate-spin text-primary mb-4" />
-          <h2 className="text-xl font-semibold">Crafting your outline...</h2>
-          <p className="text-slate-500">Consulting Gemini...</p>
+        <div className="flex flex-col items-center justify-center h-screen relative z-10">
+          <Loader2 className="w-12 h-12 animate-spin text-accent mb-6" />
+          <h2 className="text-2xl font-serif font-bold text-stone-200">Crafting your outline...</h2>
+          <p className="text-stone-400 mt-2 font-sans">The biographer is reviewing your documents.</p>
         </div>
       )}
 

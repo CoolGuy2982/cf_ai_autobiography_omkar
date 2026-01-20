@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { API_BASE_URL } from '../utils/api';
+import { FileText, Upload, CheckCircle } from 'lucide-react';
 
-// Set PDF worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 interface DocumentUploadProps {
@@ -19,7 +19,6 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({ userId, onUpload
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         let fullText = '';
-
         for (let i = 1; i <= pdf.numPages; i++) {
             const page = await pdf.getPage(i);
             const textContent = await page.getTextContent();
@@ -34,15 +33,10 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({ userId, onUpload
         try {
             for (const file of files) {
                 const text = await extractText(file);
-                // Send to Backend
                 await fetch(`${API_BASE_URL}/api/documents`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        userId,
-                        filename: file.name,
-                        text
-                    })
+                    body: JSON.stringify({ userId, filename: file.name, text })
                 });
             }
             onUploadComplete();
@@ -61,59 +55,66 @@ export const DocumentUpload: React.FC<DocumentUploadProps> = ({ userId, onUpload
     };
 
     return (
-        <div className="p-8 bg-white rounded-2xl shadow-xl border border-slate-100 max-w-lg w-full mx-auto mt-10">
-            <h2 className="text-2xl font-bold text-primary mb-4">Upload Context</h2>
-            <p className="text-secondary mb-6">Upload up to 10 PDFs (Resumes, Journals, etc) to give the AI context.</p>
+        <div className="flex flex-col items-center justify-center min-h-screen p-6 relative z-10">
+            <div className="w-full max-w-lg bg-[#f0eadd] p-10 rounded-sm shadow-card border-t border-white/40 relative transform rotate-1">
+                {/* Folder Tab Visual */}
+                <div className="absolute -top-3 left-0 w-1/3 h-4 bg-[#e6dfcf] rounded-t-sm border-t border-white/20"></div>
 
-            <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:bg-slate-50 transition-colors">
-                <input
-                    type="file"
-                    multiple
-                    accept=".pdf"
-                    onChange={onFileChange}
-                    className="hidden"
-                    id="file-input-visible"
-                />
-                <p className="text-sm text-slate-500">
-                    {files.length > 0 ? `${files.length} files selected` : 'Drag & drop or Click to select'}
-                </p>
-                {uploading && (
-                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mt-4">
-                        <div className="bg-primary h-full transition-all duration-300 animate-pulse" style={{ width: `100%` }} />
+                <div className="relative z-10 text-ink text-center">
+                    <div className="mb-8">
+                        <h2 className="text-2xl font-serif font-bold text-wood-dark">The Archives</h2>
+                        <p className="text-stone-500 mt-2 text-sm">Provide context for the AI biographer (Resumes, Journals, etc).</p>
                     </div>
-                )}
-            </div>
 
-            <div className="flex gap-4 mt-6">
-                <button
-                    onClick={() => document.getElementById('file-input')?.click()}
-                    disabled={uploading}
-                    className="flex-1 px-6 py-2 bg-primary text-white rounded-full hover:bg-slate-800 disabled:opacity-50 transition-colors"
-                >
-                    {uploading ? 'Processing...' : 'Select PDF'}
-                </button>
-                <button
-                    onClick={handleUpload}
-                    disabled={files.length === 0 || uploading}
-                    className="flex-1 px-6 py-2 bg-accent text-white rounded-full hover:bg-blue-600 disabled:opacity-50 transition-colors"
-                >
-                    Upload & Analyze
-                </button>
-                <button
-                    onClick={onUploadComplete}
-                    className="px-6 py-2 bg-slate-200 text-slate-700 rounded-full hover:bg-slate-300 transition-colors"
-                >
-                    Skip
-                </button>
+                    <div 
+                        onClick={() => document.getElementById('file-input-visible')?.click()}
+                        className="border-2 border-dashed border-stone-300 bg-white/40 rounded-sm p-10 cursor-pointer hover:bg-white/60 hover:border-accent transition-all group"
+                    >
+                        <input
+                            type="file"
+                            multiple
+                            accept=".pdf"
+                            onChange={onFileChange}
+                            className="hidden"
+                            id="file-input-visible"
+                        />
+                        
+                        {files.length === 0 ? (
+                            <div className="flex flex-col items-center gap-3 text-stone-400 group-hover:text-accent">
+                                <Upload size={32} />
+                                <span className="text-sm font-medium uppercase tracking-wider">Drop PDFs here</span>
+                            </div>
+                        ) : (
+                            <div className="flex flex-col items-center gap-3 text-wood-dark">
+                                <FileText size={32} className="text-accent" />
+                                <span className="text-lg font-serif italic">{files.length} files selected</span>
+                            </div>
+                        )}
+                    </div>
+
+                    {uploading && (
+                        <div className="mt-6 w-full bg-stone-200 h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-accent h-full animate-pulse w-full origin-left" />
+                        </div>
+                    )}
+
+                    <div className="flex gap-4 mt-10">
+                        <button
+                            onClick={handleUpload}
+                            disabled={files.length === 0 || uploading}
+                            className="flex-1 py-3 bg-wood-dark text-[#f0eadd] rounded-sm font-sans font-medium uppercase tracking-wider text-xs hover:bg-accent disabled:opacity-50 transition-colors shadow-lg"
+                        >
+                            {uploading ? 'Analyzing...' : 'Analyze & Begin'}
+                        </button>
+                        <button
+                            onClick={onUploadComplete}
+                            className="px-6 py-3 text-stone-400 hover:text-wood-dark font-sans text-xs font-bold uppercase tracking-wider transition-colors"
+                        >
+                            Skip
+                        </button>
+                    </div>
+                </div>
             </div>
-            <input
-                id="file-input"
-                type="file"
-                multiple
-                accept=".pdf"
-                className="hidden"
-                onChange={onFileChange}
-            />
         </div>
     );
 };

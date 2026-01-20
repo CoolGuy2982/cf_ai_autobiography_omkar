@@ -4,18 +4,37 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: #0f0c0a;
+    --foreground: #f5f5f4;
   }
- 
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+  
+  html, body {
+    height: 100%;
+    margin: 0;
+    padding: 0;
   }
 }
 
 body {
-    @apply bg-slate-50 text-slate-900 antialiased;
+    /* Base Wood Color */
+    background-color: #1c1917; 
+    
+    /* THE MAHOGANY DESK COMPOSITION */
+    background-image: 
+        /* Layer 1: Grain Texture */
+        url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.12'/%3E%3C/svg%3E"),
+        /* Layer 2: Warm Spotlight (Vignette) */
+        radial-gradient(circle at 50% 40%, #4a3b32 0%, #1c1917 60%, #000000 100%);
+        
+    /* Blending the grain into the gradient */
+    background-blend-mode: soft-light, normal;
+    
+    /* Ensure texture covers screen */
+    background-size: 200px 200px, cover;
+    background-attachment: fixed;
+    background-repeat: repeat, no-repeat;
+    
+    @apply text-stone-200 antialiased font-sans overflow-hidden;
 }
 
 /* Custom Scrollbar for "Premium" feel */
@@ -26,9 +45,9 @@ body {
     background: transparent; 
 }
 ::-webkit-scrollbar-thumb {
-    background: #cbd5e1; 
+    background: rgba(255, 255, 255, 0.1); 
     border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-    background: #94a3b8; 
+    background: rgba(255, 255, 255, 0.2); 
 }
