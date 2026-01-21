@@ -18,11 +18,11 @@ const app = new Hono<{ Bindings: Bindings }>();
 
 app.use('/*', cors());
 
-app.get('/', (c) => {
-    return c.text('Cloudflare AI Autobiography Backend is running!');
-});
+app.get('/', (c) => c.text('Cloudflare AI Autobiography Backend is running!'));
 
-// WebSocket Route
+// ==========================================
+// WebSocket Route (Connects to Durable Object)
+// ==========================================
 app.get('/api/session/:id/connect', async (c) => {
     const id = c.req.param('id');
     const upgradeHeader = c.req.header('Upgrade');
@@ -34,29 +34,31 @@ app.get('/api/session/:id/connect', async (c) => {
     const idObj = c.env.INTERVIEW_SESSION.idFromName(id);
     const stub = c.env.INTERVIEW_SESSION.get(idObj);
 
+    // FIX: Pass credentials explicitly to the DO to avoid missing env var issues
     const url = new URL(c.req.url);
     url.pathname = "/websocket";
     url.searchParams.set("bookId", id);
+    url.searchParams.set("cf_account_id", c.env.CF_ACCOUNT_ID || "");
+    url.searchParams.set("cf_gateway_id", c.env.CF_GATEWAY_ID || "");
+    url.searchParams.set("gemini_key", c.env.GEMINI_API_KEY || "");
+    if (c.env.CF_AIG_TOKEN) {
+        url.searchParams.set("cf_aig_token", c.env.CF_AIG_TOKEN);
+    }
     
-    const request = new Request(url, c.req.raw);
-
-    return stub.fetch(request);
+    return stub.fetch(new Request(url, c.req.raw));
 });
 
-// User Onboarding Route
+// ==========================================
+// User Onboarding
+// ==========================================
 app.post('/api/onboarding', async (c) => {
     try {
         const { name, dob, birthLocation } = await c.req.json();
         const id = `user_${Date.now()}`;
-
-        await c.env.DB.prepare(
-            `INSERT INTO users (id, name, dob, created_at) VALUES (?, ?, ?, ?)`
-        ).bind(id, name, dob, Date.now()).run();
+        await c.env.DB.prepare(`INSERT INTO users (id, name, dob, created_at) VALUES (?, ?, ?, ?)`).bind(id, name, dob, Date.now()).run();
 
         if (birthLocation) {
-            await c.env.DB.prepare(
-                `INSERT INTO locations (id, user_id, lat, lng, label, date_start) VALUES (?, ?, ?, ?, ?, ?)`
-            ).bind(crypto.randomUUID(), id, birthLocation.lat, birthLocation.lng, 'Birthplace', dob).run();
+            await c.env.DB.prepare(`INSERT INTO locations (id, user_id, lat, lng, label, date_start) VALUES (?, ?, ?, ?, ?, ?)`).bind(crypto.randomUUID(), id, birthLocation.lat, birthLocation.lng, 'Birthplace', dob).run();
         }
 
         return c.json({ success: true, userId: id });
@@ -66,128 +68,103 @@ app.post('/api/onboarding', async (c) => {
     }
 });
 
-// Document Upload Route
+// ==========================================
+// Document Upload
+// ==========================================
 app.post('/api/documents', async (c) => {
     try {
         const { userId, filename, text } = await c.req.json();
-        if (!userId || !filename || !text) return c.json({ error: 'Missing fields' }, 400);
-
         const key = `documents/${userId}/${filename}`;
         await c.env.BUCKET.put(key, text);
-
         return c.json({ success: true, key });
     } catch (e) {
         return c.json({ error: 'Upload failed', details: (e as Error).message }, 500);
     }
 });
 
-// Helper to call Gemini via Cloudflare AI Gateway
-async function callGeminiGateway(env: Bindings, systemPrompt: string, userContent: string) {
-    const model = "gemini-2.5-flash"; // Using 2.5 Flash as standard
-    // IMPORTANT: Using v1beta for better system_instruction support
-    const url = `https://gateway.ai.cloudflare.com/v1/${env.CF_ACCOUNT_ID}/${env.CF_GATEWAY_ID}/google-ai-studio/v1beta/models/${model}:generateContent`;
-
-    const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': env.GEMINI_API_KEY
-    };
-
-    if (env.CF_AIG_TOKEN) {
-        headers['cf-aig-authorization'] = `Bearer ${env.CF_AIG_TOKEN}`;
-    }
-
-    const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-            // FIX: Must be snake_case for REST API
-            system_instruction: {
-                parts: [{ text: systemPrompt }]
-            },
-            contents: [
-                {
-                    role: "user",
-                    parts: [{ text: userContent }]
-                }
-            ]
-        })
-    });
-
-    if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`AI Gateway Error: ${errText}`);
-    }
-
-    const data: any = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-}
-
+// ==========================================
 // Start Book / Generate Outline
+// ==========================================
 app.post('/api/books/start', async (c) => {
     try {
         const { userId, title } = await c.req.json();
 
-        // 1. Fetch user documents
+        // 1. Fetch Context
+        const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first();
+        const location = await c.env.DB.prepare("SELECT * FROM locations WHERE user_id = ?").bind(userId).first();
         const list = await c.env.BUCKET.list({ prefix: `documents/${userId}/` });
-        let context = "";
-
+        
+        let docContext = "";
         if (list && list.objects) {
             for (const object of list.objects) {
                 const file = await c.env.BUCKET.get(object.key);
-                if (file) {
-                    const content = await file.text();
-                    context += `\n--- Document: ${object.key} ---\n${content}\n`;
-                }
+                if (file) docContext += `\n--- Document: ${object.key} ---\n${await file.text()}\n`;
             }
         }
+        if (!docContext) docContext = "User has not uploaded any documents yet.";
 
-        if (!context) {
-            context = "User has not uploaded any documents yet. Start with a generic autobiographical structure.";
-        }
+        // 2. Define Tool
+        const saveOutlineTool = {
+            name: "save_outline",
+            description: "Saves the structured outline.",
+            parameters: {
+                type: "OBJECT",
+                properties: {
+                    title: { type: "STRING" },
+                    chapters: {
+                        type: "ARRAY",
+                        items: {
+                            type: "OBJECT",
+                            properties: {
+                                index: { type: "INTEGER" },
+                                title: { type: "STRING" },
+                                summary: { type: "STRING" }
+                            },
+                            required: ["index", "title", "summary"]
+                        }
+                    }
+                },
+                required: ["title", "chapters"]
+            }
+        };
 
-        // 2. Generate Outline
-        const systemPrompt = `You are an expert autobiography ghostwriter. Based on the provided documents, create a detailed book outline. 
-        Return ONLY valid JSON (no markdown formatting) with this structure:
-        { "title": "Book Title", "chapters": [ { "index": 1, "title": "Chapter Title", "summary": "Detailed summary of what to cover" } ] }`;
+        // 3. Call AI
+        const systemPrompt = `You are an expert biographer. User: ${user?.name}, Born: ${user?.dob}. Create an outline. You MUST call 'save_outline'.`;
+        const userContent = `Documents:\n${docContext}`;
 
-        let outlineData;
-        try {
-            let jsonStr = await callGeminiGateway(c.env, systemPrompt, `Here is the context:\n${context}`);
-            jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '').trim();
-            outlineData = JSON.parse(jsonStr);
-        } catch (aiErr) {
-            console.error("AI Generation failed:", aiErr);
-            outlineData = {
-                title: title || "My Story",
-                chapters: [
-                    { index: 1, title: "The Beginning", summary: "Discussing birth and early childhood." },
-                    { index: 2, title: "Growing Up", summary: "School years and early friends." }
-                ]
-            };
-        }
+        const gatewayUrl = `https://gateway.ai.cloudflare.com/v1/${c.env.CF_ACCOUNT_ID}/${c.env.CF_GATEWAY_ID}/google-ai-studio/v1beta/models/gemini-2.5-flash:generateContent`;
 
-        const outlineJson = JSON.stringify(outlineData);
+        const response = await fetch(gatewayUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': c.env.GEMINI_API_KEY,
+                ...(c.env.CF_AIG_TOKEN ? { 'cf-aig-authorization': `Bearer ${c.env.CF_AIG_TOKEN}` } : {})
+            },
+            body: JSON.stringify({
+                contents: [{ role: "user", parts: [{ text: systemPrompt + "\n\n" + userContent }] }],
+                tools: [{ function_declarations: [saveOutlineTool] }],
+                tool_config: { function_calling_config: { mode: "ANY" } }
+            })
+        });
 
-        // 3. Save Book
+        if (!response.ok) throw new Error(await response.text());
+
+        const data: any = await response.json();
+        const args = data.candidates?.[0]?.content?.parts?.[0]?.functionCall?.args;
+        
+        // Fallback
+        const outlineData = args || { title: title || "My Story", chapters: [{ index: 1, title: "Introduction", summary: "The beginning." }] };
+
+        // 4. Save
         const bookId = crypto.randomUUID();
-        await c.env.DB.prepare(
-            `INSERT INTO books (id, user_id, title, outline_json) VALUES (?, ?, ?, ?)`
-        ).bind(bookId, userId, outlineData.title, outlineJson).run();
-
-        // 4. Create Chapters
-        if (outlineData.chapters) {
-            for (const chap of outlineData.chapters) {
-                await c.env.DB.prepare(
-                    `INSERT INTO chapters (id, book_id, chapter_index, title) VALUES (?, ?, ?, ?)`
-                ).bind(crypto.randomUUID(), bookId, chap.index, chap.title).run();
-            }
-        }
+        await c.env.DB.prepare(`INSERT INTO books (id, user_id, title, outline_json) VALUES (?, ?, ?, ?)`).bind(bookId, userId, outlineData.title, JSON.stringify(outlineData)).run();
 
         return c.json({ success: true, bookId, outline: outlineData });
 
     } catch (e) {
         console.error(e);
-        return c.json({ error: 'Failed to start book', details: (e as Error).message }, 500);
+        return c.json({ error: (e as Error).message }, 500);
     }
 });
 
