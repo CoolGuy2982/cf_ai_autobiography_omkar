@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Onboarding } from './components/Onboarding';
 import { DocumentUpload } from './components/DocumentUpload';
 import { Workspace } from './components/Workspace';
@@ -10,6 +10,34 @@ function App() {
   const [userId, setUserId] = useState<string>('');
   const [bookTitle, setBookTitle] = useState<string>('');
   const [sessionId, setSessionId] = useState<string>('');
+  const [isRestoring, setIsRestoring] = useState(true);
+
+  // Restore state from LocalStorage on mount
+  useEffect(() => {
+    const savedPhase = localStorage.getItem('cf_ai_phase');
+    const savedUserId = localStorage.getItem('cf_ai_userId');
+    const savedSessionId = localStorage.getItem('cf_ai_sessionId');
+    const savedTitle = localStorage.getItem('cf_ai_title');
+
+    if (savedPhase && savedUserId) {
+        setUserId(savedUserId);
+        if (savedSessionId) setSessionId(savedSessionId);
+        if (savedTitle) setBookTitle(savedTitle);
+        // Cast to valid phase type
+        setPhase(savedPhase as any);
+    }
+    setIsRestoring(false);
+  }, []);
+
+  // Persist state changes
+  useEffect(() => {
+    if (!isRestoring) {
+        localStorage.setItem('cf_ai_phase', phase);
+        if (userId) localStorage.setItem('cf_ai_userId', userId);
+        if (sessionId) localStorage.setItem('cf_ai_sessionId', sessionId);
+        if (bookTitle) localStorage.setItem('cf_ai_title', bookTitle);
+    }
+  }, [phase, userId, sessionId, bookTitle, isRestoring]);
 
   const handleOnboardingComplete = async (data: { name: string; dob: string; birthLocation: { lat: number; lng: number } }) => {
     try {
@@ -57,9 +85,9 @@ function App() {
     }
   };
 
+  if (isRestoring) return <div className="min-h-screen bg-wood-dark flex items-center justify-center text-stone-400">Restoring session...</div>;
+
   return (
-    // CHANGED: Removed bg-slate-50 and text-slate-900. Added text-stone-200.
-    // This allows the "body" wood texture to show through.
     <div className="min-h-screen font-sans text-stone-200 selection:bg-accent/30">
       {phase === 'onboarding' && <Onboarding onComplete={handleOnboardingComplete} />}
 

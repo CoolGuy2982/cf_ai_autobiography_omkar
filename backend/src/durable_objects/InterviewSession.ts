@@ -28,6 +28,7 @@ export class InterviewSession extends DurableObject {
     bookContext: any = null;
     notes: NoteItem[] = [];
     mode: 'interview' | 'writing' = 'interview';
+    isProcessing: boolean = false;
     
     config = {
         accountId: "",
@@ -55,12 +56,19 @@ export class InterviewSession extends DurableObject {
                 config: any
             }>(["history", "bookId", "notes", "mode", "config"]);
             
-            if (stored.history) this.history = stored.history;
-            if (stored.bookId) this.bookId = stored.bookId;
-            if (stored.notes) this.notes = stored.notes;
-            if (stored.mode) this.mode = stored.mode;
+            this.history = stored.history || [];
+            this.bookId = stored.bookId || "";
+            this.notes = stored.notes || []; 
+            this.mode = stored.mode || 'interview';
             if (stored.config) this.config = { ...this.config, ...stored.config };
         });
+    }
+
+    // Helper to send logs to the frontend
+    broadcastLog(ws: WebSocket, message: string) {
+        try {
+            ws.send(JSON.stringify({ type: 'debug_log', content: `[Server] ${message}` }));
+        } catch (e) { /* ignore */ }
     }
 
     async fetch(request: Request): Promise<Response> {
@@ -106,15 +114,18 @@ export class InterviewSession extends DurableObject {
             if (data.type === 'init') {
                 if (!this.bookContext) await this.loadBookContext();
                 
-                // Sync State
+                // Send current state
                 ws.send(JSON.stringify({ type: 'outline', content: this.bookContext }));
                 ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
+                
+                this.broadcastLog(ws, `Init session. Loaded ${this.notes.length} notes.`);
 
                 if (this.history.length === 0) {
                     const firstChapter = this.bookContext?.chapters?.[0];
                     const opening = `I've reviewed your outline. We are starting with **${firstChapter?.title || 'Chapter 1'}**. ${firstChapter?.summary || ''}\n\nLet's begin.`;
                     this.history.push({ role: 'assistant', content: opening });
                     ws.send(JSON.stringify({ type: 'response', content: opening, role: 'assistant' }));
+                    await this.state.storage.put("history", this.history);
                 } else {
                     const visibleHistory = this.history
                         .filter(m => m.content && (m.role === 'user' || m.role === 'assistant'))
@@ -123,12 +134,49 @@ export class InterviewSession extends DurableObject {
                 }
             } 
             else if (data.type === 'update_notes') {
-                // User manual update
-                this.notes = data.content;
-                await this.state.storage.put("notes", this.notes);
+                const clientNotes = Array.isArray(data.content) ? data.content as NoteItem[] : [];
+                
+                // === ROBUST MERGE STRATEGY ===
+                // 1. We iterate over SERVER notes. If the client has a matching ID with different content, we update.
+                // 2. We find NEW notes in the client list and add them.
+                // 3. We DO NOT delete notes just because they are missing from clientNotes. 
+                //    (This prevents race conditions where client state is stale/empty)
+
+                let hasChanges = false;
+                
+                // Update existing
+                const newNotesArray = this.notes.map(serverNote => {
+                    const clientVersion = clientNotes.find(n => n.id === serverNote.id);
+                    if (clientVersion && clientVersion.content !== serverNote.content) {
+                        hasChanges = true;
+                        return { ...serverNote, content: clientVersion.content };
+                    }
+                    return serverNote;
+                });
+
+                // Add new from client
+                const purelyNewFromClient = clientNotes.filter(cn => !this.notes.some(sn => sn.id === cn.id));
+                if (purelyNewFromClient.length > 0) {
+                    hasChanges = true;
+                    newNotesArray.push(...purelyNewFromClient);
+                    this.broadcastLog(ws, `Added ${purelyNewFromClient.length} manual notes.`);
+                }
+
+                if (hasChanges) {
+                    this.notes = newNotesArray;
+                    await this.state.storage.put("notes", this.notes);
+                    // Bounce back the authoritative merged state
+                    ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
+                }
             }
             else if (data.type === 'message') {
+                if (this.isProcessing) {
+                    this.broadcastLog(ws, "BUSY: Ignored user message while processing.");
+                    return; 
+                }
+
                 this.history.push({ role: 'user', content: data.content });
+                await this.state.storage.put("history", this.history);
                 await this.processTurn(ws);
             }
         } catch (err) {
@@ -145,28 +193,48 @@ export class InterviewSession extends DurableObject {
     }
 
     async processTurn(ws: WebSocket) {
-        if (this.mode === 'interview') {
+        this.isProcessing = true;
+        try {
             await this.runInterviewerAgent(ws);
-        } else {
-            await this.runInterviewerAgent(ws); 
+            await this.state.storage.put("history", this.history);
+            await this.state.storage.put("notes", this.notes);
+        } finally {
+            this.isProcessing = false;
         }
-        await this.state.storage.put("history", this.history);
-        await this.state.storage.put("notes", this.notes);
     }
 
     async runInterviewerAgent(ws: WebSocket) {
         const tools = [
             {
-                name: "manage_notepad",
-                description: "Manage the user's notepad. You can add new notes, update existing ones to fix errors/add details, or delete irrelevant ones.",
+                name: "create_note",
+                description: "Create a new note card for a NEW topic.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
-                        action: { type: "STRING", enum: ["create", "update", "delete"], description: "The action to perform" },
-                        note_content: { type: "STRING", description: "The text content (required for create/update)" },
-                        note_id: { type: "STRING", description: "The exact ID of the note (required for update/delete)" }
+                        content: { type: "STRING", description: "The content of the new note." }
                     },
-                    required: ["action"]
+                    required: ["content"]
+                }
+            },
+            {
+                name: "append_to_note",
+                description: "Add details to an EXISTING note. Appends text to the end.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        note_id: { type: "STRING", description: "The ID of the note to append to." },
+                        content_to_add: { type: "STRING", description: "The text to add." }
+                    },
+                    required: ["note_id", "content_to_add"]
+                }
+            },
+            {
+                name: "delete_note",
+                description: "Remove a note completely.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: { note_id: { type: "STRING" } },
+                    required: ["note_id"]
                 }
             },
             {
@@ -179,24 +247,22 @@ export class InterviewSession extends DurableObject {
         let keepGoing = true;
         
         while (keepGoing) {
-            // FIX: Generate the System Prompt INSIDE the loop.
-            // This ensures the AI sees the latest notes (including IDs) every single step.
             const currentNotesContext = this.notes.length > 0 
                 ? JSON.stringify(this.notes.map(n => ({ id: n.id, content: n.content })))
-                : "No notes yet.";
+                : "[(No notes yet)]";
 
             const systemPrompt = `
             You are an expert biographer.
             GOAL: Interview the user to gather material for their autobiography chapter.
             
-            CURRENT NOTEPAD STATE (JSON):
+            === CURRENT NOTEPAD ===
             ${currentNotesContext}
+            =======================
             
             RULES:
-            1. Use 'manage_notepad' to record new facts.
-            2. If you see an existing note that needs detail, use 'update' with its ID. DO NOT create duplicates.
+            1. Use 'create_note' for brand new topics.
+            2. Use 'append_to_note' to add details to existing notes.
             3. Be conversational.
-            4. Call 'finalize_interview' when ready.
             `;
 
             try {
@@ -204,32 +270,50 @@ export class InterviewSession extends DurableObject {
                 const call = response.functionCalls?.[0];
 
                 if (call) {
-                    if (call.name === 'manage_notepad') {
-                        const { action, note_content, note_id } = call.args;
-
-                        if (action === 'create') {
-                            const newNote = { id: crypto.randomUUID(), content: note_content || "New Note" };
-                            this.notes.push(newNote);
-                        } 
-                        else if (action === 'update' && note_id) {
-                            this.notes = this.notes.map(n => n.id === note_id ? { ...n, content: note_content } : n);
-                        }
-                        else if (action === 'delete' && note_id) {
-                            this.notes = this.notes.filter(n => n.id !== note_id);
-                        }
-
-                        // Save & Sync immediately
-                        await this.state.storage.put("notes", this.notes);
-                        ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
+                    if (call.name === 'create_note') {
+                        const { content } = call.args;
+                        const newNote = { id: crypto.randomUUID(), content: content || "New Note" };
                         
-                        this.history.push({ role: 'tool', functionResponse: { name: 'manage_notepad', response: { success: true } } });
+                        // Use spread to ensure new array reference
+                        this.notes = [...this.notes, newNote];
+                        
+                        this.broadcastLog(ws, `AI Created Note: ${newNote.id.substring(0,4)}`);
+                        this.history.push({ role: 'tool', functionResponse: { name: 'create_note', response: { success: true, noteId: newNote.id } } });
                     } 
+                    else if (call.name === 'append_to_note') {
+                        const { note_id, content_to_add } = call.args;
+                        const target = this.notes.find(n => n.id === note_id);
+                        
+                        if (target) {
+                            const prefix = target.content.endsWith(' ') ? '' : ' ';
+                            const newContent = target.content + prefix + content_to_add;
+                            
+                            this.notes = this.notes.map(n => n.id === note_id ? { ...n, content: newContent } : n);
+                            
+                            this.broadcastLog(ws, `AI Appended to: ${note_id.substring(0,4)}`);
+                            this.history.push({ role: 'tool', functionResponse: { name: 'append_to_note', response: { success: true, currentContent: newContent } } });
+                        } else {
+                            this.broadcastLog(ws, `AI Failed Append: ${note_id} not found`);
+                            this.history.push({ role: 'tool', functionResponse: { name: 'append_to_note', response: { error: "Note not found" } } });
+                        }
+                    }
+                    else if (call.name === 'delete_note') {
+                        const { note_id } = call.args;
+                        this.notes = this.notes.filter(n => n.id !== note_id);
+                        this.broadcastLog(ws, `AI Deleted: ${note_id}`);
+                        this.history.push({ role: 'tool', functionResponse: { name: 'delete_note', response: { success: true } } });
+                    }
                     else if (call.name === 'finalize_interview') {
                         keepGoing = false;
                         this.mode = 'writing';
                         await this.runWriterAgent(ws);
                         return;
                     }
+
+                    // Save & Sync immediately
+                    await this.state.storage.put("notes", this.notes);
+                    ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
+                    
                 } else {
                     const text = response.text || "I'm thinking...";
                     this.history.push({ role: 'assistant', content: text });
@@ -264,9 +348,7 @@ export class InterviewSession extends DurableObject {
         const gatewayId = this.config.gatewayId;
         const apiKey = this.config.geminiKey;
         
-        if (!accountId || !gatewayId || !apiKey) {
-            throw new Error("Missing Credentials");
-        }
+        if (!accountId || !gatewayId || !apiKey) throw new Error("Missing Credentials");
 
         const model = "gemini-2.5-flash"; 
         const url = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/google-ai-studio/v1beta/models/${model}:generateContent`;
@@ -299,7 +381,7 @@ export class InterviewSession extends DurableObject {
         const candidate = data.candidates?.[0];
 
         if (candidate?.finishReason === "SAFETY") {
-             return { text: "I cannot continue this topic due to safety guidelines.", functionCalls: [] };
+             return { text: "Safety guardrail triggered.", functionCalls: [] };
         }
 
         return {

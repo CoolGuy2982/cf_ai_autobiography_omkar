@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bookmark } from 'lucide-react';
+import { Bookmark, ChevronLeft, ChevronRight } from 'lucide-react';
+import Markdown from 'react-markdown';
 
 interface BookCanvasProps {
     content: string;
@@ -9,8 +10,52 @@ interface BookCanvasProps {
 }
 
 export const BookCanvas: React.FC<BookCanvasProps> = ({ content, chapterTitle, visible }) => {
-    // State for the bookmark interaction
-    const [isBookmarked, setIsBookmarked] = useState(false);
+    const [pages, setPages] = useState<string[]>([]);
+    const [currentPage, setCurrentPage] = useState(0);
+    const [isFlipping, setIsFlipping] = useState(false);
+
+    // Simple Pagination Logic
+    useEffect(() => {
+        if (!content) {
+            setPages([]);
+            return;
+        }
+        
+        // Split by paragraphs
+        const paragraphs = content.split('\n\n');
+        const generatedPages: string[] = [];
+        let currentPageText = "";
+        const CHARS_PER_PAGE = 1200;
+
+        paragraphs.forEach(para => {
+            if ((currentPageText.length + para.length) > CHARS_PER_PAGE) {
+                generatedPages.push(currentPageText);
+                currentPageText = para + "\n\n";
+            } else {
+                currentPageText += para + "\n\n";
+            }
+        });
+        if (currentPageText) generatedPages.push(currentPageText);
+        
+        setPages(generatedPages);
+        // If content updates, stay on page unless new content pushes us forward
+        if (currentPage >= generatedPages.length) setCurrentPage(Math.max(0, generatedPages.length - 1));
+
+    }, [content]);
+
+    const handleFlip = (dir: 'next' | 'prev') => {
+        if (isFlipping) return;
+        if (dir === 'next' && currentPage < pages.length - 1) {
+            setIsFlipping(true);
+            setCurrentPage(p => p + 1);
+            setTimeout(() => setIsFlipping(false), 600);
+        }
+        if (dir === 'prev' && currentPage > 0) {
+            setIsFlipping(true);
+            setCurrentPage(p => p - 1);
+            setTimeout(() => setIsFlipping(false), 600);
+        }
+    };
 
     return (
         <motion.div
@@ -21,110 +66,93 @@ export const BookCanvas: React.FC<BookCanvasProps> = ({ content, chapterTitle, v
                 scale: visible ? 1 : 0.9,
                 display: visible ? 'block' : 'none'
             }}
-            transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }} 
+            transition={{ duration: 0.8 }} 
             className="w-full max-w-5xl h-[85vh] mx-auto relative perspective-2000"
         >
-            {/* 1. The Leather Cover */}
-            <div className="absolute -inset-3 bg-[#1B2235] rounded-md shadow-[0_30px_60px_-12px_rgba(0,0,0,0.7)] z-0 border-t border-l border-[#2e3a59] border-b-4 border-r-4 border-[#111626]">
+            {/* Book Cover / Spine */}
+            <div className="absolute -inset-3 bg-[#1B2235] rounded-md shadow-book z-0 border-t border-l border-[#2e3a59] border-b-4 border-r-4 border-[#111626]">
                 <div className="absolute inset-0 opacity-40 bg-[url('https://www.transparenttextures.com/patterns/black-leather.png')] mix-blend-overlay rounded-md"></div>
             </div>
 
-            {/* 2. Page Block Thickness */}
-            <div className="absolute top-1 bottom-[-8px] left-[2px] right-[2px] bg-[#e3dacb] rounded-sm z-0">
-                <div className="absolute inset-0 bg-gradient-to-r from-stone-400/30 via-transparent to-stone-400/20 rounded-sm"></div>
+            {/* Page Block (Static Background Page) */}
+            <div className="absolute top-1 bottom-1 left-2 right-2 bg-[#fffefb] rounded-sm shadow-inner z-10 flex">
+                <div className="w-1/2 h-full border-r border-stone-200/50 relative">
+                     {/* Left page content (Previous page if flipped) */}
+                     {currentPage > 0 && (
+                        <div className="p-16 h-full font-serif text-[19px] leading-[1.8] text-stone-900/40 select-none overflow-hidden">
+                            <Markdown>{pages[currentPage - 1]}</Markdown>
+                        </div>
+                     )}
+                </div>
+                <div className="w-1/2 h-full relative">
+                     {/* Right page content (Next page if exists) */}
+                     {currentPage < pages.length - 1 && (
+                        <div className="p-16 h-full font-serif text-[19px] leading-[1.8] text-stone-900/40 select-none overflow-hidden">
+                            <Markdown>{pages[currentPage + 1]}</Markdown>
+                        </div>
+                     )}
+                </div>
             </div>
 
-            {/* 3. The Open Pages */}
-            <div className="relative w-full h-full bg-[#fffefb] rounded-sm flex overflow-hidden shadow-inner z-10">
-                
-                {/* --- LEFT PAGE --- */}
-                <div className="hidden lg:flex w-1/2 h-full relative flex-col border-r border-stone-200/50">
+            {/* FLIPPING PAGE */}
+            <AnimatePresence initial={false} mode="wait">
+                <motion.div 
+                    key={currentPage}
+                    initial={{ rotateY: -90, transformOrigin: 'left center', zIndex: 50 }}
+                    animate={{ rotateY: 0, zIndex: 20 }}
+                    exit={{ rotateY: -180, zIndex: 50, transition: { duration: 0.6 } }} // Flip to left
+                    transition={{ duration: 0.6, ease: "easeInOut" }}
+                    className="absolute top-1 bottom-1 left-[50%] right-2 bg-[#fffefb] rounded-r-sm shadow-md overflow-hidden origin-left backface-hidden"
+                    style={{ transformStyle: 'preserve-3d' }}
+                >
                     <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cream-paper.png')] opacity-20 mix-blend-multiply"></div>
-                    <div className="absolute right-0 top-0 bottom-0 w-24 bg-gradient-to-l from-black/10 to-transparent pointer-events-none z-20 mix-blend-multiply" />
-
-                    <div className="relative z-30 p-16 h-full flex flex-col items-center justify-center text-center select-none">
-                        <div className="mb-8 opacity-60">
-                            <span className="font-serif italic text-stone-500 text-lg">Part I</span>
-                        </div>
-                        
-                        <h1 className="font-serif font-bold text-4xl text-stone-800 leading-tight mb-8 tracking-wide drop-shadow-sm">
-                            {chapterTitle}
-                        </h1>
-                        
-                        <div className="w-12 h-[3px] bg-[#1B2235]/80 rounded-full mb-8"></div>
-                        
-                        <p className="font-serif text-stone-500 italic max-w-xs leading-relaxed text-lg">
-                            "Every life is a story waiting to be told. Let us begin at the beginning."
-                        </p>
-                    </div>
-
-                    <div className="absolute bottom-8 left-0 right-0 text-center text-xs text-stone-400 font-serif italic">
-                        14
-                    </div>
-                </div>
-
-                {/* --- RIGHT PAGE --- */}
-                <div className="w-full lg:w-1/2 h-full relative flex flex-col bg-[#fffefb]">
-                    <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cream-paper.png')] opacity-20 mix-blend-multiply"></div>
-                    <div className="absolute left-0 top-0 bottom-0 w-16 bg-gradient-to-r from-black/10 to-transparent pointer-events-none z-20 mix-blend-multiply" />
-                    <div className="absolute left-0 top-0 bottom-0 w-12 bg-gradient-to-r from-transparent via-white/60 to-transparent pointer-events-none z-20 mix-blend-soft-light" />
-
-                    {/* --- DYNAMIC BOOKMARK SYSTEM --- */}
-                    <div className="absolute right-12 top-0 z-50">
-                        <AnimatePresence>
-                            {isBookmarked ? (
-                                /* The Ribbon (Visible when Bookmarked) - CLEANED UP */
-                                <motion.div
-                                    key="ribbon"
-                                    initial={{ y: -150 }}
-                                    animate={{ y: 0 }}
-                                    exit={{ y: -150 }}
-                                    transition={{ type: "spring", stiffness: 120, damping: 15 }}
-                                    className="w-10 h-32 bg-amber-600 relative rounded-b-md shadow-xl cursor-pointer hover:brightness-110 transition-all"
-                                    onClick={() => setIsBookmarked(false)}
-                                    title="Remove Bookmark"
-                                >
-                                    <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/fabric-of-squares.png')] opacity-30"></div>
-                                    <div className="absolute bottom-0 left-0 right-0 h-4 bg-gradient-to-t from-black/20 to-transparent"></div>
-                                </motion.div>
+                    
+                    {/* Page Content */}
+                    <div className="p-16 h-full flex flex-col relative z-20">
+                        <div className="flex-1 overflow-hidden">
+                            {pages.length > 0 ? (
+                                <div className="font-serif text-[19px] leading-[1.8] text-stone-900">
+                                    {currentPage === 0 && (
+                                        <h1 className="text-3xl font-bold mb-6 text-center">{chapterTitle}</h1>
+                                    )}
+                                    <Markdown components={{
+                                        p: ({children}) => <p className="mb-4 text-justify indent-8">{children}</p>
+                                    }}>
+                                        {pages[currentPage]}
+                                    </Markdown>
+                                </div>
                             ) : (
-                                /* The Icon (Visible when NOT Bookmarked) */
-                                <motion.button
-                                    key="icon"
-                                    initial={{ opacity: 0, y: -20 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    exit={{ opacity: 0, y: -20 }}
-                                    transition={{ duration: 0.3 }}
-                                    onClick={() => setIsBookmarked(true)}
-                                    className="mt-6 text-stone-300 hover:text-amber-600 hover:scale-110 transition-all"
-                                    title="Bookmark this page"
-                                >
-                                    <Bookmark size={28} strokeWidth={1.5} />
-                                </motion.button>
-                            )}
-                        </AnimatePresence>
-                    </div>
-
-                    {/* Writing Area */}
-                    <div className="flex-1 overflow-y-auto custom-scrollbar relative z-10 px-16 py-16">
-                        <div className="font-serif text-[21px] leading-[1.9] text-stone-900/90 whitespace-pre-wrap drop-shadow-sm selection:bg-amber-100">
-                            {content ? (
-                                <>
-                                    <span className="float-left text-7xl font-serif font-bold text-[#1B2235] mr-4 mt-[-8px] leading-none drop-shadow-sm">
-                                        {content.charAt(0)}
-                                    </span>
-                                    {content.slice(1)}
-                                </>
-                            ) : (
-                                <span className="text-stone-300 italic">The ink is wet, waiting for your words...</span>
+                                <div className="flex items-center justify-center h-full text-stone-400 italic">
+                                    The pages are empty, waiting for the story to unfold...
+                                </div>
                             )}
                         </div>
+                        <div className="mt-4 text-center text-xs text-stone-400 font-serif italic">
+                            Page {currentPage + 1}
+                        </div>
                     </div>
+                </motion.div>
+            </AnimatePresence>
 
-                    <div className="h-16 flex items-center justify-center text-stone-400 font-serif italic text-sm relative z-30">
-                        15
-                    </div>
-                </div>
+            {/* Navigation Controls */}
+            <div className="absolute -bottom-16 left-0 right-0 flex justify-center gap-8 text-stone-400 z-50">
+                <button 
+                    onClick={() => handleFlip('prev')}
+                    disabled={currentPage === 0 || isFlipping}
+                    className="p-3 hover:text-white disabled:opacity-30 transition-colors bg-white/5 rounded-full"
+                >
+                    <ChevronLeft />
+                </button>
+                <span className="py-3 font-serif">
+                    {pages.length > 0 ? `${currentPage + 1} / ${pages.length}` : "Cover"}
+                </span>
+                <button 
+                    onClick={() => handleFlip('next')}
+                    disabled={currentPage >= pages.length - 1 || isFlipping}
+                    className="p-3 hover:text-white disabled:opacity-30 transition-colors bg-white/5 rounded-full"
+                >
+                    <ChevronRight />
+                </button>
             </div>
         </motion.div>
     );
