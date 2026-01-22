@@ -59,7 +59,7 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, outline, visible, onUpd
         if (newPage < 0 || (newPage > maxNotePages && newPage !== 0)) return;
         setIsFlipping(true);
         setPage(newPage);
-        setTimeout(() => setIsFlipping(false), 600);
+        setTimeout(() => setIsFlipping(false), 500);
     };
 
     return (
@@ -73,44 +73,69 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, outline, visible, onUpd
                 display: visible ? 'block' : 'none'
             }}
             transition={{ duration: 0.6 }}
-            className="w-full max-w-[600px] h-[80vh] relative perspective-1000"
+            className="w-full max-w-[600px] h-[80vh] relative perspective-2000"
         >
-            {/* The Leather Binding Header */}
-            <div className="relative z-50 h-14 bg-[#4a1818] rounded-t-lg shadow-md flex items-center justify-between px-4 border-b-[3px] border-[#2d0e0e]">
-                <div className="absolute bottom-2 left-2 right-2 border-b border-dashed border-white/20 pointer-events-none"></div>
-                <span className="text-[#cbaba0] font-sans text-[10px] tracking-[0.3em] font-bold uppercase drop-shadow-sm ml-4">
+            {/* 1. The Leather Binding Header - HIGHEST Z-INDEX */}
+            <div className="absolute top-0 left-0 right-0 z-50 h-16 bg-[#4a1818] rounded-t-lg shadow-2xl flex items-center justify-between px-4 border-b-[4px] border-[#2d0e0e]">
+                {/* Stitching Details */}
+                <div className="absolute bottom-3 left-2 right-2 border-b border-dashed border-white/20 pointer-events-none"></div>
+                
+                <span className="text-[#cbaba0] font-sans text-[10px] tracking-[0.3em] font-bold uppercase drop-shadow-sm ml-4 mt-1">
                     Case File: {page === 0 ? "MASTER PLAN" : `FIELD NOTES (PG ${page})`}
                 </span>
-                <div className="flex gap-2 relative z-50">
+                
+                <div className="flex gap-2 relative z-50 mt-1">
                     <button 
                         onClick={() => flipPage(page - 1)}
-                        className={`p-1 rounded hover:bg-white/10 transition-colors ${page > 0 ? 'text-amber-500' : 'text-[#cbaba0] opacity-50'}`}
+                        className={`p-1.5 rounded-full hover:bg-white/10 transition-colors ${page > 0 ? 'text-amber-500' : 'text-[#cbaba0] opacity-50'}`}
                         disabled={page === 0 || isFlipping}
+                        title="Flip Back"
                     >
-                        <ChevronLeft size={18} />
+                        <ChevronLeft size={20} />
                     </button>
                     <button 
                         onClick={() => flipPage(page + 1)}
-                        className={`p-1 rounded hover:bg-white/10 transition-colors ${page < maxNotePages ? 'text-amber-500' : 'text-[#cbaba0] opacity-50'}`}
+                        className={`p-1.5 rounded-full hover:bg-white/10 transition-colors ${page < maxNotePages ? 'text-amber-500' : 'text-[#cbaba0] opacity-50'}`}
                         disabled={page >= maxNotePages || isFlipping}
+                        title="Flip Forward"
                     >
-                        <ChevronRight size={18} />
+                        <ChevronRight size={20} />
                     </button>
                 </div>
             </div>
 
-            {/* The 3D Book Container */}
-            <div className="w-full h-full relative perspective-2000">
-                <AnimatePresence initial={false} mode='popLayout'>
+            {/* 2. The Paper Container - Sits BEHIND Binding */}
+            <div className="w-full h-full relative perspective-2000 pt-14">
+                <AnimatePresence initial={false} mode='wait'>
                     <motion.div
                         key={page}
-                        initial={{ rotateY: -90, transformOrigin: "left center", opacity: 0 }}
-                        animate={{ rotateY: 0, opacity: 1 }}
-                        exit={{ rotateY: 90, opacity: 0, transition: { duration: 0.3 } }}
-                        transition={{ duration: 0.6, type: "spring", stiffness: 60 }}
-                        className="absolute inset-0 bg-[#fbf6e1] shadow-pad origin-left rounded-b-sm overflow-hidden backface-hidden"
+                        // Realistic "Swing Down" Physics
+                        initial={{ 
+                            rotateX: -100, // Starts tucked WAY up inside/behind the binding
+                            opacity: 0, 
+                            transformOrigin: "top center",
+                            filter: "brightness(0.5)" // Darker when tucked in
+                        }}
+                        animate={{ 
+                            rotateX: 0, 
+                            opacity: 1, 
+                            filter: "brightness(1)",
+                            transition: { 
+                                duration: 0.6, 
+                                type: "spring", 
+                                stiffness: 90, 
+                                damping: 14, // Gives it a slight "weighty" settle
+                                mass: 1.2
+                            }
+                        }}
+                        exit={{ 
+                            opacity: 0, 
+                            transition: { duration: 0.2 } // Quick fade out for old page
+                        }} 
+                        className="absolute inset-x-0 top-14 bottom-0 bg-[#fbf6e1] origin-top rounded-b-sm overflow-hidden shadow-pad backface-hidden"
                         style={{ transformStyle: 'preserve-3d' }}
                     >
+                        {/* Page Content */}
                         {page === 0 ? (
                             /* === PAGE 0: OUTLINE === */
                             <div className="absolute inset-0 z-20 bg-[#f4f1ea] p-12 pt-10 h-full overflow-y-auto custom-scrollbar">
@@ -118,7 +143,7 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, outline, visible, onUpd
                                 <h2 className="font-serif text-3xl font-bold text-stone-800 border-b-2 border-stone-800/20 pb-4 mb-8">
                                     {outline?.title || "Autobiography Plan"}
                                 </h2>
-                                <div className="space-y-8">
+                                <div className="space-y-8 pb-10">
                                     {outline ? outline.chapters.map((chap) => (
                                         <div key={chap.index} className="relative pl-6 border-l-2 border-amber-600/30">
                                             <h3 className="font-serif font-bold text-xl text-stone-900 mb-1">
@@ -191,9 +216,6 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, outline, visible, onUpd
                     </motion.div>
                 </AnimatePresence>
             </div>
-            
-            {/* Fake Page Stack Effect on the Right */}
-            <div className="absolute top-2 bottom-2 right-[-10px] w-[10px] bg-[#dcdcdc] rounded-r-sm z-0 border-l border-black/10"></div>
         </motion.div>
     );
 };

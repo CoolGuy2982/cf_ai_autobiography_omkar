@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ChatInterface } from './ChatInterface';
 import { BookCanvas } from './BookCanvas';
 import { Notepad } from './Notepad';
-import { MapSelector } from './MapSelector'; // Reusing the map component
+import { MapSelector } from './MapSelector'; 
 import { PenTool, BookOpen, Bug, Map as MapIcon } from 'lucide-react';
 import { getWsUrl } from '../utils/api';
 
@@ -95,20 +95,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
         ws.current.send(JSON.stringify({ type: 'message', content: text }));
     };
 
-    const handleMapSelect = (lat: number, lng: number) => {
-        // We can't easily get zoom level from the callback without modifying MapSelector widely,
-        // but we can infer or just send the coords. 
-        // For a better UX, let's assume if they click, they mean a specific place.
-        // Ideally we'd pass the zoom level. For now, let's send the coords.
-        
-        // Construct a system message to the AI
-        const locationMsg = `[System: User pointed to location on map: ${lat.toFixed(4)}, ${lng.toFixed(4)}]`;
-        
+    const handleMapSelect = (lat: number, lng: number, placeName?: string) => {
+        // If we have a place name (e.g. "Mumbai, India"), use it. Otherwise fallback to coords.
+        const locationText = placeName || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+        const systemMsg = `[System: User pointed to location on map: ${locationText}]`;
+        const uiMsg = `📍 *Points to location on map* (${locationText})`;
+
         if (ws.current?.readyState === WebSocket.OPEN) {
-            // Send silently to AI
-            ws.current.send(JSON.stringify({ type: 'message', content: locationMsg }));
-            // Add a visual indicator for the user
-            setMessages(prev => [...prev, { role: 'user', content: `📍 *Points to location on map* (${lat.toFixed(2)}, ${lng.toFixed(2)})` }]);
+            // Send hidden system message to AI
+            ws.current.send(JSON.stringify({ type: 'message', content: systemMsg }));
+            
+            // Show nice UI message to user
+            setMessages(prev => [...prev, { role: 'user', content: uiMsg }]);
         }
     };
 
@@ -172,7 +170,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                                     Click anywhere to show the Biographer
                                 </span>
                              </div>
-                             <MapSelector onLocationSelect={handleMapSelect} />
+                             
+                             <MapSelector 
+                                onLocationSelect={handleMapSelect} 
+                                active={viewMode === 'map'} 
+                                className="h-full w-full"
+                             />
                         </div>
                     </div>
 
