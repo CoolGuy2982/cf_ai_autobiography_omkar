@@ -1,3 +1,5 @@
+// FILE: frontend/src/components/Workspace.tsx
+
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatInterface } from './ChatInterface';
 import { BookCanvas } from './BookCanvas';
@@ -24,11 +26,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
     const [messages, setMessages] = useState<Message[]>([]);
     const [connected, setConnected] = useState(false);
     
-    // Debug State
     const [showDebug, setShowDebug] = useState(false);
     const [serverLogs, setServerLogs] = useState<string[]>([]);
     
-    // Single WebSocket Ref
     const ws = useRef<WebSocket | null>(null);
 
     useEffect(() => {
@@ -96,16 +96,20 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
     };
 
     const handleMapSelect = (lat: number, lng: number, placeName?: string) => {
-        // If we have a place name (e.g. "Mumbai, India"), use it. Otherwise fallback to coords.
-        const locationText = placeName || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-        const systemMsg = `[System: User pointed to location on map: ${locationText}]`;
-        const uiMsg = `📍 *Points to location on map* (${locationText})`;
+        // Use the city name returned from Nominatim, or fallback to coords if geocoding failed
+        const locationLabel = placeName || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+        
+        // System message sent to the AI for high-precision context
+        const systemMsg = `[System: User pointed to location on map: ${locationLabel} (Coordinates: ${lat}, ${lng})]`;
+        
+        // Clean UI message for the chat interface
+        const uiMsg = `📍 **${locationLabel}**`;
 
         if (ws.current?.readyState === WebSocket.OPEN) {
-            // Send hidden system message to AI
+            // 1. Send system context to AI
             ws.current.send(JSON.stringify({ type: 'message', content: systemMsg }));
             
-            // Show nice UI message to user
+            // 2. Update local UI state
             setMessages(prev => [...prev, { role: 'user', content: uiMsg }]);
         }
     };
@@ -162,7 +166,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                         onUpdateNote={handleManualNoteUpdate}
                     />
                     
-                    {/* Map Mode */}
                     <div className={`transition-all duration-500 absolute inset-0 p-20 ${viewMode === 'map' ? 'opacity-100 z-30 scale-100' : 'opacity-0 -z-10 scale-95'}`}>
                         <div className="w-full h-full border-8 border-white shadow-2xl rounded-sm rotate-1 bg-[#e3dacb] relative">
                              <div className="absolute -top-12 left-0 right-0 text-center">

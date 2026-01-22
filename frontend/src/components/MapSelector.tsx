@@ -44,45 +44,65 @@ function LocationMarker({ onSelect }: { onSelect: (lat: number, lng: number, pla
         async click(e: L.LeafletMouseEvent) {
             const { lat, lng } = e.latlng;
             
-            // 1. Visual Update: Move marker instantly so UI feels responsive
+            // 1. Visual Update: Move marker instantly
             setPosition(e.latlng);
             map.flyTo(e.latlng, map.getZoom()); 
 
-            // 2. Data Lookup: Wait for address before notifying parent
             let placeName = "";
+
             try {
-                // Nominatim OpenStreetMap API
-                const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`;
-                const res = await fetch(url, {
-                    headers: {
-                        'Accept-Language': 'en-US,en;q=0.9' // Prefer English results
-                    }
+                // --- ATTEMPT 1: OpenStreetMap Nominatim ---
+                // We use a AbortController to timeout if it hangs
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+                const osmUrl = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`;
+                const res = await fetch(osmUrl, {
+                    headers: { 'Accept-Language': 'en-US,en;q=0.9' },
+                    signal: controller.signal
                 });
-                
+                clearTimeout(timeoutId);
+
                 if (res.ok) {
                     const data = await res.json();
                     const a = data.address || {};
                     
-                    // Priority list for "City" name
-                    const city = a.city || a.town || a.village || a.municipality || a.city_district || a.suburb || a.hamlet;
+                    // Priority: City -> Town -> Village -> County/District
+                    const city = a.city || a.town || a.village || a.municipality || a.city_district || a.suburb || a.hamlet || a.county;
                     const state = a.state || a.province || a.region;
                     const country = a.country;
                     
-                    // Build string: "Chandrapur, Maharashtra, India"
-                    placeName = [city, state, country].filter(Boolean).join(", ");
-
-                    // Fallback if structured data fails but display_name exists
-                    if (!placeName && data.display_name) {
-                        // Take first 3 parts of the long display name
-                        placeName = data.display_name.split(',').slice(0, 3).join(',');
-                    }
+                    const parts = [city, state, country].filter(p => p && typeof p === 'string');
+                    if (parts.length > 0) placeName = parts.join(", ");
+                    else if (data.display_name) placeName = data.display_name.split(',').slice(0, 3).join(',');
+                } else {
+                    throw new Error("OSM Request failed");
                 }
+
             } catch (err) {
-                console.warn("Reverse geocode failed", err);
+                console.warn("Primary geocode failed, trying backup service...", err);
+                
+                // --- ATTEMPT 2: BigDataCloud (Reliable Backup) ---
+                try {
+                    const backupUrl = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`;
+                    const res2 = await fetch(backupUrl);
+                    if (res2.ok) {
+                        const data2 = await res2.json();
+                        // BDC returns: city, locality, principalSubdivision (State), countryName
+                        const city = data2.city || data2.locality;
+                        const state = data2.principalSubdivision;
+                        const country = data2.countryName;
+                        
+                        const parts = [city, state, country].filter(p => p && typeof p === 'string');
+                        if (parts.length > 0) placeName = parts.join(", ");
+                    }
+                } catch (err2) {
+                    console.error("All geocoding services failed.", err2);
+                }
             }
 
-            // 3. Final Callback: Send Coords + Name (or fallback to coords if name failed)
-            // If placeName is empty string, the Workspace will fall back to formatting the coords
+            // 3. Final Callback
+            // If both failed, we fall back to coordinates, but the UI will likely prefer the string if available.
             onSelect(lat, lng, placeName || `${lat.toFixed(4)}, ${lng.toFixed(4)}`);
         },
     });
