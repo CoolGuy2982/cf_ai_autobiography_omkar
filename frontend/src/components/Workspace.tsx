@@ -1,11 +1,9 @@
-// FILE: frontend/src/components/Workspace.tsx
-
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatInterface } from './ChatInterface';
 import { BookCanvas } from './BookCanvas';
 import { Notepad } from './Notepad';
 import { MapSelector } from './MapSelector'; 
-import { PenTool, BookOpen, Bug, Map as MapIcon } from 'lucide-react';
+import { PenTool, BookOpen, Bug, Map as MapIcon, RefreshCw, ArrowRight } from 'lucide-react';
 import { getWsUrl } from '../utils/api';
 
 interface WorkspaceProps {
@@ -25,6 +23,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
     const [manuscript, setManuscript] = useState("");
     const [messages, setMessages] = useState<Message[]>([]);
     const [connected, setConnected] = useState(false);
+    
+    // 'writing' mode locks the chat and shows the book generation controls
+    const [mode, setMode] = useState<'interview' | 'writing'>('interview');
     
     const [showDebug, setShowDebug] = useState(false);
     const [serverLogs, setServerLogs] = useState<string[]>([]);
@@ -54,6 +55,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                 else if (data.type === 'notes_sync') {
                     setNotes(data.content);
                 }
+                else if (data.type === 'mode_sync') {
+                    setMode(data.content);
+                    if (data.content === 'writing') {
+                        setViewMode('book'); // Auto switch to book view
+                    }
+                }
                 else if (data.type === 'response') {
                     setMessages(prev => {
                         const lastMsg = prev[prev.length - 1];
@@ -66,9 +73,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                 else if (data.type === 'history') {
                     setMessages(data.content);
                 }
-                else if (data.type === 'draft_final') {
-                    setManuscript(data.content);
-                    setViewMode('book'); 
+                // === STREAMING HANDLER ===
+                else if (data.type === 'draft_chunk') {
+                    if (data.reset) {
+                        setManuscript(data.content); // Reset or Start fresh
+                    } else {
+                        setManuscript(prev => prev + data.content); // Append chunk
+                    }
+                    if (viewMode !== 'book') setViewMode('book');
                 }
                 else if (data.type === 'debug_log') {
                     setServerLogs(prev => [data.content, ...prev].slice(0, 50));
@@ -96,20 +108,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
     };
 
     const handleMapSelect = (lat: number, lng: number, placeName?: string) => {
-        // Use the city name returned from Nominatim, or fallback to coords if geocoding failed
         const locationLabel = placeName || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-        
-        // System message sent to the AI for high-precision context
         const systemMsg = `[System: User pointed to location on map: ${locationLabel} (Coordinates: ${lat}, ${lng})]`;
-        
-        // Clean UI message for the chat interface
         const uiMsg = `📍 **${locationLabel}**`;
 
         if (ws.current?.readyState === WebSocket.OPEN) {
-            // 1. Send system context to AI
             ws.current.send(JSON.stringify({ type: 'message', content: systemMsg }));
-            
-            // 2. Update local UI state
             setMessages(prev => [...prev, { role: 'user', content: uiMsg }]);
         }
     };
@@ -122,21 +126,70 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
         }
     };
 
+    // --- WRITING ACTIONS ---
+    const handleRetry = () => {
+        if (ws.current?.readyState === WebSocket.OPEN) {
+            ws.current.send(JSON.stringify({ type: 'retry_chapter' }));
+        }
+    };
+
+    const handleNextChapter = () => {
+        if (confirm("Move to the next chapter? This will clear the chat history and notes for a fresh start.")) {
+            if (ws.current?.readyState === WebSocket.OPEN) {
+                ws.current.send(JSON.stringify({ type: 'next_chapter' }));
+                setMode('interview'); // Optimistic update
+                setViewMode('notepad');
+                setMessages([]); // Clear local messages
+            }
+        }
+    };
+
     return (
-        <div className="flex h-screen w-screen overflow-hidden">
-            <div className="w-[500px] shrink-0 h-full relative z-50 transition-all shadow-[5px_0_30px_0_rgba(0,0,0,0.5)]">
+        <div className="flex h-screen w-screen overflow-hidden font-sans">
+            {/* LEFT PANEL: Chat / Dashboard */}
+            <div className="w-[450px] shrink-0 h-full relative z-50 transition-all shadow-[5px_0_30px_0_rgba(0,0,0,0.5)] bg-[#1c1917] flex flex-col">
                 <ChatInterface 
                     messages={messages} 
                     onSendMessage={handleSendMessage} 
                     connected={connected}
+                    disabled={mode === 'writing'} // Hide input when writing
                 /> 
+
+                {/* Writing Mode Controls Overlay */}
+                {mode === 'writing' && (
+                    <div className="absolute bottom-0 left-0 right-0 bg-wood-dark/95 border-t border-white/10 p-6 backdrop-blur-md">
+                        <div className="flex items-center gap-3 mb-4 text-amber-500 animate-pulse">
+                            <PenTool size={18} />
+                            <span className="font-serif italic text-lg">Writing in progress...</span>
+                        </div>
+                        <p className="text-stone-400 text-sm mb-6">
+                            The biographer is drafting your chapter based on the interview notes and documents.
+                        </p>
+                        <div className="flex gap-3">
+                            <button 
+                                onClick={handleRetry}
+                                className="flex-1 py-3 px-4 rounded bg-stone-800 text-stone-300 hover:text-white hover:bg-stone-700 transition-colors flex items-center justify-center gap-2 text-sm font-bold uppercase tracking-wide border border-white/5"
+                            >
+                                <RefreshCw size={16} /> Retry
+                            </button>
+                            <button 
+                                onClick={handleNextChapter}
+                                className="flex-1 py-3 px-4 rounded bg-amber-700 text-white hover:bg-amber-600 transition-colors flex items-center justify-center gap-2 text-sm font-bold uppercase tracking-wide shadow-lg"
+                            >
+                                Next Chapter <ArrowRight size={16} />
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
 
+            {/* RIGHT PANEL: Workspace Canvas */}
             <div className="flex-1 h-full relative flex flex-col bg-wood-pattern">
                 <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-black/20 via-transparent to-black/40 z-40" />
 
-                <div className="absolute top-8 z-50 flex justify-center w-full">
-                    <div className="bg-black/30 backdrop-blur-md p-1.5 rounded-full flex gap-2 border border-white/10 shadow-xl">
+                {/* View Switcher */}
+                <div className="absolute top-8 z-50 flex justify-center w-full pointer-events-none">
+                    <div className="bg-black/40 backdrop-blur-md p-1.5 rounded-full flex gap-2 border border-white/10 shadow-xl pointer-events-auto">
                         <button 
                             onClick={() => setViewMode('notepad')}
                             className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all ${viewMode === 'notepad' ? 'bg-white text-stone-900 shadow-lg' : 'text-white/60 hover:text-white hover:bg-white/10'}`}
@@ -189,6 +242,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                     />
                 </div>
                 
+                {/* Debug Toggle */}
                 <button 
                     onClick={() => setShowDebug(!showDebug)}
                     className="absolute bottom-4 left-4 z-50 p-2 bg-black/50 text-white/30 rounded-full hover:text-white hover:bg-black/80 transition-colors"

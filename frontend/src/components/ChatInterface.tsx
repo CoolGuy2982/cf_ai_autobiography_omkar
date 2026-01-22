@@ -12,9 +12,10 @@ interface ChatInterfaceProps {
     messages: Message[];
     onSendMessage: (text: string) => void;
     connected: boolean;
+    disabled?: boolean; // NEW: Controls visibility of input
 }
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onSendMessage, connected }) => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onSendMessage, connected, disabled }) => {
     const [input, setInput] = useState('');
     const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -32,6 +33,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onS
 
     return (
         <div className="flex flex-col h-full bg-white/5 backdrop-blur-2xl border-r border-white/10 shadow-[5px_0_30px_0_rgba(0,0,0,0.3)] text-stone-100">
+            {/* Header */}
             <div className="h-24 flex items-center px-8 border-b border-white/10 bg-black/20 shrink-0">
                 <div className="w-12 h-12 rounded-full bg-gradient-to-br from-amber-600 to-orange-800 flex items-center justify-center mr-5 shadow-lg border border-white/10">
                     <Sparkles size={20} className="text-white" />
@@ -47,7 +49,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onS
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-8 space-y-10 custom-scrollbar" ref={scrollRef}>
+            {/* Chat History */}
+            <div className={cn("flex-1 overflow-y-auto p-8 space-y-10 custom-scrollbar", disabled ? "pb-40" : "")} ref={scrollRef}>
                 {messages.length === 0 && connected && (
                     <div className="text-center text-white/30 italic mt-10">
                         Biographer is reviewing your notes...
@@ -94,38 +97,41 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onS
                 ))}
             </div>
 
-            <div className="p-8 pt-4 bg-gradient-to-t from-black/80 via-black/60 to-transparent shrink-0">
-                <div className="relative group">
-                    <div className="absolute -inset-1 bg-gradient-to-r from-amber-600 to-orange-700 rounded-2xl opacity-0 group-focus-within:opacity-40 transition duration-500 blur-lg"></div>
-                    <div className="relative flex items-center bg-[#1c1917] rounded-2xl shadow-2xl border border-white/10">
-                        <textarea
-                            className="flex-1 bg-transparent p-5 text-base font-sans text-white placeholder:text-white/20 focus:outline-none resize-none overflow-hidden"
-                            placeholder="Type your response..."
-                            rows={1}
-                            style={{ minHeight: '60px' }}
-                            value={input}
-                            onChange={e => {
-                                setInput(e.target.value);
-                                e.target.style.height = 'auto';
-                                e.target.style.height = e.target.scrollHeight + 'px';
-                            }}
-                            onKeyDown={e => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                    e.preventDefault();
-                                    handleSend();
-                                }
-                            }}
-                        />
-                        <button
-                            onClick={handleSend}
-                            disabled={!input.trim()}
-                            className="p-4 mr-2 text-white/50 hover:text-amber-500 transition-colors disabled:opacity-30 disabled:hover:text-white/50"
-                        >
-                            <Send size={24} />
-                        </button>
+            {/* Input Area (Hidden if Disabled) */}
+            {!disabled && (
+                <div className="p-8 pt-4 bg-gradient-to-t from-black/80 via-black/60 to-transparent shrink-0">
+                    <div className="relative group">
+                        <div className="absolute -inset-1 bg-gradient-to-r from-amber-600 to-orange-700 rounded-2xl opacity-0 group-focus-within:opacity-40 transition duration-500 blur-lg"></div>
+                        <div className="relative flex items-center bg-[#1c1917] rounded-2xl shadow-2xl border border-white/10">
+                            <textarea
+                                className="flex-1 bg-transparent p-5 text-base font-sans text-white placeholder:text-white/20 focus:outline-none resize-none overflow-hidden"
+                                placeholder="Type your response..."
+                                rows={1}
+                                style={{ minHeight: '60px' }}
+                                value={input}
+                                onChange={e => {
+                                    setInput(e.target.value);
+                                    e.target.style.height = 'auto';
+                                    e.target.style.height = e.target.scrollHeight + 'px';
+                                }}
+                                onKeyDown={e => {
+                                    if (e.key === 'Enter' && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleSend();
+                                    }
+                                }}
+                            />
+                            <button
+                                onClick={handleSend}
+                                disabled={!input.trim()}
+                                className="p-4 mr-2 text-white/50 hover:text-amber-500 transition-colors disabled:opacity-30 disabled:hover:text-white/50"
+                            >
+                                <Send size={24} />
+                            </button>
+                        </div>
                     </div>
                 </div>
-            </div>
+            )}
         </div>
     );
 };

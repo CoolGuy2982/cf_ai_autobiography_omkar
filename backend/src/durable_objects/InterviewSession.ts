@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 interface Env {
     DB: D1Database;
+    BUCKET: R2Bucket;
     CF_ACCOUNT_ID: string;
     CF_GATEWAY_ID: string;
     GEMINI_API_KEY: string;
@@ -25,10 +26,14 @@ export class InterviewSession extends DurableObject {
     env: Env;
     history: ThreadMessage[] = [];
     bookId: string = "";
-    bookContext: any = null;
+    userId: string = "";
+    bookContext: any = null; // The Outline
     notes: NoteItem[] = [];
     mode: 'interview' | 'writing' = 'interview';
     isProcessing: boolean = false;
+    
+    // We track the current draft content in memory during generation
+    currentDraft: string = ""; 
     
     config = {
         accountId: "",
@@ -51,15 +56,19 @@ export class InterviewSession extends DurableObject {
             const stored = await this.state.storage.get<{ 
                 history: ThreadMessage[], 
                 bookId: string, 
+                userId: string,
                 notes: NoteItem[],
                 mode: 'interview' | 'writing',
+                currentDraft: string,
                 config: any
-            }>(["history", "bookId", "notes", "mode", "config"]);
+            }>(["history", "bookId", "userId", "notes", "mode", "currentDraft", "config"]);
             
             this.history = stored.history || [];
             this.bookId = stored.bookId || "";
+            this.userId = stored.userId || "";
             this.notes = stored.notes || []; 
             this.mode = stored.mode || 'interview';
+            this.currentDraft = stored.currentDraft || "";
             if (stored.config) this.config = { ...this.config, ...stored.config };
         });
     }
@@ -79,6 +88,15 @@ export class InterviewSession extends DurableObject {
             if (queryBookId) {
                 this.bookId = queryBookId;
                 await this.state.storage.put("bookId", this.bookId);
+                
+                // Lazy load userId if missing
+                if (!this.userId) {
+                    const book = await this.env.DB.prepare("SELECT user_id FROM books WHERE id = ?").bind(this.bookId).first();
+                    if (book) {
+                        this.userId = book.user_id as string;
+                        await this.state.storage.put("userId", this.userId);
+                    }
+                }
             }
 
             const accId = url.searchParams.get("cf_account_id");
@@ -117,10 +135,14 @@ export class InterviewSession extends DurableObject {
                 // Send current state
                 ws.send(JSON.stringify({ type: 'outline', content: this.bookContext }));
                 ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
+                ws.send(JSON.stringify({ type: 'mode_sync', content: this.mode }));
                 
-                this.broadcastLog(ws, `Init session. Loaded ${this.notes.length} notes.`);
+                // If we have a draft in progress or done, send it
+                if (this.currentDraft) {
+                     ws.send(JSON.stringify({ type: 'draft_chunk', content: this.currentDraft, reset: true }));
+                }
 
-                if (this.history.length === 0) {
+                if (this.history.length === 0 && this.mode === 'interview') {
                     const firstChapter = this.bookContext?.chapters?.[0];
                     const opening = `I've reviewed your outline. We are starting with **${firstChapter?.title || 'Chapter 1'}**. ${firstChapter?.summary || ''}\n\nLet's begin.`;
                     this.history.push({ role: 'assistant', content: opening });
@@ -135,43 +157,22 @@ export class InterviewSession extends DurableObject {
             } 
             else if (data.type === 'update_notes') {
                 const clientNotes = Array.isArray(data.content) ? data.content as NoteItem[] : [];
-                
-                // === ROBUST MERGE STRATEGY ===
-                // 1. We iterate over SERVER notes. If the client has a matching ID with different content, we update.
-                // 2. We find NEW notes in the client list and add them.
-                // 3. We DO NOT delete notes just because they are missing from clientNotes. 
-                //    (This prevents race conditions where client state is stale/empty)
-
-                let hasChanges = false;
-                
-                // Update existing
-                const newNotesArray = this.notes.map(serverNote => {
-                    const clientVersion = clientNotes.find(n => n.id === serverNote.id);
-                    if (clientVersion && clientVersion.content !== serverNote.content) {
-                        hasChanges = true;
-                        return { ...serverNote, content: clientVersion.content };
-                    }
-                    return serverNote;
-                });
-
-                // Add new from client
-                const purelyNewFromClient = clientNotes.filter(cn => !this.notes.some(sn => sn.id === cn.id));
-                if (purelyNewFromClient.length > 0) {
-                    hasChanges = true;
-                    newNotesArray.push(...purelyNewFromClient);
-                    this.broadcastLog(ws, `Added ${purelyNewFromClient.length} manual notes.`);
-                }
-
-                if (hasChanges) {
-                    this.notes = newNotesArray;
-                    await this.state.storage.put("notes", this.notes);
-                    // Bounce back the authoritative merged state
-                    ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
-                }
+                this.notes = clientNotes;
+                await this.state.storage.put("notes", this.notes);
+                ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
+            }
+            else if (data.type === 'retry_chapter') {
+                this.broadcastLog(ws, "Retrying chapter generation...");
+                this.currentDraft = "";
+                await this.state.storage.put("currentDraft", "");
+                ws.send(JSON.stringify({ type: 'draft_chunk', content: "", reset: true }));
+                await this.runWriterAgent(ws);
+            }
+            else if (data.type === 'next_chapter') {
+                await this.resetForNextChapter(ws);
             }
             else if (data.type === 'message') {
-                if (this.isProcessing) {
-                    this.broadcastLog(ws, "BUSY: Ignored user message while processing.");
+                if (this.isProcessing || this.mode === 'writing') {
                     return; 
                 }
 
@@ -210,36 +211,22 @@ export class InterviewSession extends DurableObject {
                 description: "Create a new note card for a NEW topic.",
                 parameters: {
                     type: "OBJECT",
-                    properties: {
-                        content: { type: "STRING", description: "The content of the new note." }
-                    },
+                    properties: { content: { type: "STRING" } },
                     required: ["content"]
                 }
             },
             {
                 name: "append_to_note",
-                description: "Add details to an EXISTING note. Appends text to the end.",
+                description: "Add details to an EXISTING note.",
                 parameters: {
                     type: "OBJECT",
-                    properties: {
-                        note_id: { type: "STRING", description: "The ID of the note to append to." },
-                        content_to_add: { type: "STRING", description: "The text to add." }
-                    },
+                    properties: { note_id: { type: "STRING" }, content_to_add: { type: "STRING" } },
                     required: ["note_id", "content_to_add"]
                 }
             },
             {
-                name: "delete_note",
-                description: "Remove a note completely.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: { note_id: { type: "STRING" } },
-                    required: ["note_id"]
-                }
-            },
-            {
                 name: "finalize_interview",
-                description: "Call this when you are ready to write the chapter.",
+                description: "Call this when you have enough info to write the chapter.",
                 parameters: { type: "OBJECT", properties: {}, required: [] }
             }
         ];
@@ -261,7 +248,7 @@ export class InterviewSession extends DurableObject {
             
             RULES:
             1. Use 'create_note' for brand new topics.
-            2. Use 'append_to_note' to add details to existing notes.
+            2. Use 'append_to_note' to add details.
             3. Be conversational.
             `;
 
@@ -273,44 +260,30 @@ export class InterviewSession extends DurableObject {
                     if (call.name === 'create_note') {
                         const { content } = call.args;
                         const newNote = { id: crypto.randomUUID(), content: content || "New Note" };
-                        
-                        // Use spread to ensure new array reference
                         this.notes = [...this.notes, newNote];
-                        
-                        this.broadcastLog(ws, `AI Created Note: ${newNote.id.substring(0,4)}`);
                         this.history.push({ role: 'tool', functionResponse: { name: 'create_note', response: { success: true, noteId: newNote.id } } });
                     } 
                     else if (call.name === 'append_to_note') {
                         const { note_id, content_to_add } = call.args;
                         const target = this.notes.find(n => n.id === note_id);
-                        
                         if (target) {
-                            const prefix = target.content.endsWith(' ') ? '' : ' ';
-                            const newContent = target.content + prefix + content_to_add;
-                            
+                            const newContent = target.content + " " + content_to_add;
                             this.notes = this.notes.map(n => n.id === note_id ? { ...n, content: newContent } : n);
-                            
-                            this.broadcastLog(ws, `AI Appended to: ${note_id.substring(0,4)}`);
-                            this.history.push({ role: 'tool', functionResponse: { name: 'append_to_note', response: { success: true, currentContent: newContent } } });
+                            this.history.push({ role: 'tool', functionResponse: { name: 'append_to_note', response: { success: true } } });
                         } else {
-                            this.broadcastLog(ws, `AI Failed Append: ${note_id} not found`);
                             this.history.push({ role: 'tool', functionResponse: { name: 'append_to_note', response: { error: "Note not found" } } });
                         }
-                    }
-                    else if (call.name === 'delete_note') {
-                        const { note_id } = call.args;
-                        this.notes = this.notes.filter(n => n.id !== note_id);
-                        this.broadcastLog(ws, `AI Deleted: ${note_id}`);
-                        this.history.push({ role: 'tool', functionResponse: { name: 'delete_note', response: { success: true } } });
                     }
                     else if (call.name === 'finalize_interview') {
                         keepGoing = false;
                         this.mode = 'writing';
+                        await this.state.storage.put("mode", this.mode);
+                        ws.send(JSON.stringify({ type: 'mode_sync', content: this.mode }));
+                        
                         await this.runWriterAgent(ws);
                         return;
                     }
 
-                    // Save & Sync immediately
                     await this.state.storage.put("notes", this.notes);
                     ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
                     
@@ -322,35 +295,181 @@ export class InterviewSession extends DurableObject {
                 }
             } catch (e: any) {
                 console.error("Agent Error:", e);
-                ws.send(JSON.stringify({ type: 'response', content: `(System: ${e.message})`, role: 'assistant' }));
                 keepGoing = false;
             }
         }
     }
 
+    // --- CONTEXT GATHERING FOR WRITER ---
+    async gatherFullContext(): Promise<string> {
+        let context = "";
+
+        // 1. User Bio & Location
+        if (this.userId) {
+            const user = await this.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(this.userId).first();
+            const loc = await this.env.DB.prepare("SELECT * FROM locations WHERE user_id = ?").bind(this.userId).first();
+            
+            context += `\n=== SUBJECT BIO ===\nName: ${user?.name}\nDOB: ${user?.dob}\n`;
+            if (loc) context += `Birth/Primary Location: ${loc.label} (${loc.lat}, ${loc.lng})\n`;
+        }
+
+        // 2. Uploaded Documents (Full Text)
+        if (this.userId) {
+            const list = await this.env.BUCKET.list({ prefix: `documents/${this.userId}/` });
+            if (list && list.objects.length > 0) {
+                context += `\n=== UPLOADED DOCUMENTS ===\n`;
+                for (const object of list.objects) {
+                    const file = await this.env.BUCKET.get(object.key);
+                    if (file) {
+                        context += `\n--- File: ${object.key} ---\n${await file.text()}\n`;
+                    }
+                }
+            }
+        }
+
+        // 3. Interview Notes
+        context += `\n=== INTERVIEW NOTES (Latest) ===\n`;
+        this.notes.forEach(n => {
+            context += `- ${n.content}\n`;
+        });
+
+        // 4. Interview Transcript
+        context += `\n=== INTERVIEW TRANSCRIPT ===\n`;
+        this.history.forEach(m => {
+            if (m.content && (m.role === 'user' || m.role === 'assistant')) {
+                context += `${m.role.toUpperCase()}: ${m.content}\n`;
+            }
+        });
+
+        return context;
+    }
+
     async runWriterAgent(ws: WebSocket) {
-        ws.send(JSON.stringify({ type: 'response', content: "Drafting your chapter now...", role: 'assistant' }));
-        const notesText = this.notes.map(n => `- ${n.content}`).join("\n");
-        const prompt = `Write the autobiography chapter based on these notes:\n${notesText}\n\nWrite in first person.`;
+        this.broadcastLog(ws, "Gathering full context (DB + R2)...");
+        const fullContext = await this.gatherFullContext();
         
+        const systemPrompt = `
+        You are a world-class biographer. 
+        Your task is to write the next chapter of the autobiography based on the gathered materials.
+        
+        Input Context:
+        ${fullContext}
+        
+        Directives:
+        1. Write in First Person (I).
+        2. Use sensory details and a strong narrative voice suitable for the subject.
+        3. Incorporate specific facts from the uploaded documents and the interview.
+        4. Output formatted Markdown.
+        5. Do not include meta-commentary like "Here is the chapter". Just start writing the title and the text.
+        `;
+
+        this.broadcastLog(ws, "Starting Generation Stream...");
+        this.currentDraft = ""; // Reset draft
+        ws.send(JSON.stringify({ type: 'draft_chunk', content: "", reset: true }));
+
         try {
-            const response = await this.callGemini(prompt, undefined);
-            const draft = response.text || "";
-            ws.send(JSON.stringify({ type: 'draft_final', content: draft }));
-            this.history.push({ role: 'assistant', content: "I've updated the manuscript." });
+            await this.streamGemini(systemPrompt, ws);
+            this.broadcastLog(ws, "Generation Complete.");
+            // Save final draft to state
+            await this.state.storage.put("currentDraft", this.currentDraft);
         } catch (e: any) {
-            ws.send(JSON.stringify({ type: 'response', content: `Writing failed: ${e.message}`, role: 'assistant' }));
+            console.error("Writer Error", e);
+            this.broadcastLog(ws, `Writer Error: ${e.message}`);
         }
     }
 
+    async resetForNextChapter(ws: WebSocket) {
+        // 1. Archive the current draft (Optional: Save to DB chapters table if implementing full book structure)
+        // For now, we just reset the session state for the "next" chapter
+        
+        // 2. Clear Session Data
+        this.history = []; // Reset Chat
+        this.notes = [];   // Reset Notes
+        this.mode = 'interview'; // Back to interview mode
+        this.currentDraft = "";
+
+        await this.state.storage.put("history", this.history);
+        await this.state.storage.put("notes", this.notes);
+        await this.state.storage.put("mode", this.mode);
+        await this.state.storage.put("currentDraft", this.currentDraft);
+
+        // 3. Notify Frontend
+        ws.send(JSON.stringify({ type: 'init' })); // Force frontend refresh
+        
+        // 4. Start new interview with greeting
+        const greeting = "I've saved that chapter. Let's move on to the next part of your story. What should we focus on next?";
+        this.history.push({ role: 'assistant', content: greeting });
+        await this.state.storage.put("history", this.history);
+        ws.send(JSON.stringify({ type: 'response', content: greeting, role: 'assistant' }));
+    }
+
+    // --- STREAMING GEMINI IMPLEMENTATION ---
+    async streamGemini(prompt: string, ws: WebSocket) {
+        const accountId = this.config.accountId;
+        const gatewayId = this.config.gatewayId;
+        const apiKey = this.config.geminiKey;
+        const model = "gemini-2.5-flash";
+
+        // Use streamGenerateContent endpoint
+        const url = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/google-ai-studio/v1beta/models/${model}:streamGenerateContent?alt=sse`;
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': apiKey,
+                ...(this.config.aigToken ? { 'cf-aig-authorization': `Bearer ${this.config.aigToken}` } : {})
+            },
+            body: JSON.stringify({
+                contents: [{ role: "user", parts: [{ text: prompt }] }]
+            })
+        });
+
+        if (!response.body) throw new Error("No response body");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            buffer += chunk;
+
+            const lines = buffer.split("\n");
+            // Keep the last incomplete line in the buffer
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                    const jsonStr = line.slice(6).trim();
+                    if (jsonStr === "[DONE]") return;
+                    
+                    try {
+                        const data = JSON.parse(jsonStr);
+                        const textChunk = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (textChunk) {
+                            this.currentDraft += textChunk;
+                            // Stream to client
+                            ws.send(JSON.stringify({ type: 'draft_chunk', content: textChunk, reset: false }));
+                        }
+                    } catch (e) {
+                        // ignore parsing errors on intermediate chunks
+                    }
+                }
+            }
+        }
+    }
+
+    // Standard Non-Streaming Call (for Interviewer)
     async callGemini(systemInstruction: string, tools?: any[]) {
         const accountId = this.config.accountId;
         const gatewayId = this.config.gatewayId;
         const apiKey = this.config.geminiKey;
+        const model = "gemini-2.5-flash";
         
-        if (!accountId || !gatewayId || !apiKey) throw new Error("Missing Credentials");
-
-        const model = "gemini-2.5-flash"; 
         const url = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/google-ai-studio/v1beta/models/${model}:generateContent`;
         
         const contents = this.history.map(m => {
@@ -372,21 +491,12 @@ export class InterviewSession extends DurableObject {
             body: JSON.stringify(body)
         });
 
-        if (!resp.ok) {
-            const errorText = await resp.text();
-            throw new Error(`AI Gateway refused: ${resp.status} - ${errorText}`);
-        }
-
+        if (!resp.ok) throw new Error(`AI Error: ${resp.status}`);
         const data: any = await resp.json();
-        const candidate = data.candidates?.[0];
-
-        if (candidate?.finishReason === "SAFETY") {
-             return { text: "Safety guardrail triggered.", functionCalls: [] };
-        }
-
+        
         return {
-            text: candidate?.content?.parts?.[0]?.text,
-            functionCalls: candidate?.content?.parts?.filter((p:any) => p.functionCall).map((p:any) => p.functionCall)
+            text: data.candidates?.[0]?.content?.parts?.[0]?.text,
+            functionCalls: data.candidates?.[0]?.content?.parts?.filter((p:any) => p.functionCall).map((p:any) => p.functionCall)
         };
     }
 }
