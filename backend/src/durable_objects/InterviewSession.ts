@@ -35,6 +35,9 @@ export class InterviewSession extends DurableObject {
     // We track the current draft content in memory during generation
     currentDraft: string = ""; 
     
+    // Controller to cancel generation streams
+    abortController: AbortController | null = null;
+    
     config = {
         accountId: "",
         gatewayId: "",
@@ -146,8 +149,8 @@ export class InterviewSession extends DurableObject {
                     const firstChapter = this.bookContext?.chapters?.[0];
                     const opening = `I've reviewed your outline. We are starting with **${firstChapter?.title || 'Chapter 1'}**. ${firstChapter?.summary || ''}\n\nLet's begin.`;
                     this.history.push({ role: 'assistant', content: opening });
-                    ws.send(JSON.stringify({ type: 'response', content: opening, role: 'assistant' }));
                     await this.state.storage.put("history", this.history);
+                    ws.send(JSON.stringify({ type: 'response', content: opening, role: 'assistant' }));
                 } else {
                     const visibleHistory = this.history
                         .filter(m => m.content && (m.role === 'user' || m.role === 'assistant'))
@@ -167,6 +170,18 @@ export class InterviewSession extends DurableObject {
                 await this.state.storage.put("currentDraft", "");
                 ws.send(JSON.stringify({ type: 'draft_chunk', content: "", reset: true }));
                 await this.runWriterAgent(ws);
+            }
+            else if (data.type === 'cancel_generation') {
+                this.broadcastLog(ws, "Cancelling generation...");
+                if (this.abortController) {
+                    this.abortController.abort();
+                    this.abortController = null;
+                }
+                // Revert to interview mode
+                this.mode = 'interview';
+                await this.state.storage.put("mode", this.mode);
+                ws.send(JSON.stringify({ type: 'mode_sync', content: this.mode }));
+                ws.send(JSON.stringify({ type: 'debug_log', content: "Generation Cancelled. You can continue interviewing." }));
             }
             else if (data.type === 'next_chapter') {
                 await this.resetForNextChapter(ws);
@@ -232,8 +247,10 @@ export class InterviewSession extends DurableObject {
         ];
 
         let keepGoing = true;
+        let turns = 0;
         
-        while (keepGoing) {
+        while (keepGoing && turns < 5) {
+            turns++;
             const currentNotesContext = this.notes.length > 0 
                 ? JSON.stringify(this.notes.map(n => ({ id: n.id, content: n.content })))
                 : "[(No notes yet)]";
@@ -304,42 +321,54 @@ export class InterviewSession extends DurableObject {
     async gatherFullContext(): Promise<string> {
         let context = "";
 
-        // 1. User Bio & Location
-        if (this.userId) {
-            const user = await this.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(this.userId).first();
-            const loc = await this.env.DB.prepare("SELECT * FROM locations WHERE user_id = ?").bind(this.userId).first();
-            
-            context += `\n=== SUBJECT BIO ===\nName: ${user?.name}\nDOB: ${user?.dob}\n`;
-            if (loc) context += `Birth/Primary Location: ${loc.label} (${loc.lat}, ${loc.lng})\n`;
-        }
+        try {
+            // 1. User Bio & Location
+            if (this.userId) {
+                const user = await this.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(this.userId).first();
+                const loc = await this.env.DB.prepare("SELECT * FROM locations WHERE user_id = ?").bind(this.userId).first();
+                
+                context += `\n# SUBJECT BIO\nName: ${user?.name || "Unknown"}\nDOB: ${user?.dob || "Unknown"}\n`;
+                if (loc) context += `Birth/Primary Location: ${loc.label} (${loc.lat}, ${loc.lng})\n`;
+            }
 
-        // 2. Uploaded Documents (Full Text)
-        if (this.userId) {
-            const list = await this.env.BUCKET.list({ prefix: `documents/${this.userId}/` });
-            if (list && list.objects.length > 0) {
-                context += `\n=== UPLOADED DOCUMENTS ===\n`;
-                for (const object of list.objects) {
-                    const file = await this.env.BUCKET.get(object.key);
-                    if (file) {
-                        context += `\n--- File: ${object.key} ---\n${await file.text()}\n`;
+            // 2. Uploaded Documents (Full Text)
+            if (this.userId) {
+                context += `\n# UPLOADED DOCUMENTS (Background Context)\n`;
+                const list = await this.env.BUCKET.list({ prefix: `documents/${this.userId}/` });
+                if (list && list.objects.length > 0) {
+                    for (const object of list.objects) {
+                        const file = await this.env.BUCKET.get(object.key);
+                        if (file) {
+                            context += `\n## File: ${object.key}\n${await file.text()}\n`;
+                        }
                     }
+                } else {
+                    context += "(No documents uploaded)\n";
                 }
             }
-        }
 
-        // 3. Interview Notes
-        context += `\n=== INTERVIEW NOTES (Latest) ===\n`;
-        this.notes.forEach(n => {
-            context += `- ${n.content}\n`;
-        });
-
-        // 4. Interview Transcript
-        context += `\n=== INTERVIEW TRANSCRIPT ===\n`;
-        this.history.forEach(m => {
-            if (m.content && (m.role === 'user' || m.role === 'assistant')) {
-                context += `${m.role.toUpperCase()}: ${m.content}\n`;
+            // 3. Interview Notes
+            context += `\n# INTERVIEW NOTES (Latest Findings)\n`;
+            if (this.notes.length > 0) {
+                this.notes.forEach(n => {
+                    context += `- ${n.content}\n`;
+                });
+            } else {
+                context += "(No notes taken)\n";
             }
-        });
+
+            // 4. Interview Transcript
+            context += `\n# INTERVIEW TRANSCRIPT (Raw)\n`;
+            this.history.forEach(m => {
+                if (m.content && (m.role === 'user' || m.role === 'assistant')) {
+                    context += `${m.role.toUpperCase()}: ${m.content}\n`;
+                }
+            });
+
+        } catch (e: any) {
+            console.error("Context Gather Error:", e);
+            context += `\n[System Error gathering context: ${e.message}]\n`;
+        }
 
         return context;
     }
@@ -350,17 +379,17 @@ export class InterviewSession extends DurableObject {
         
         const systemPrompt = `
         You are a world-class biographer. 
-        Your task is to write the next chapter of the autobiography based on the gathered materials.
+        Your task is to write the next chapter of the autobiography based on the gathered materials below.
         
-        Input Context:
         ${fullContext}
         
-        Directives:
+        === WRITING INSTRUCTIONS ===
         1. Write in First Person (I).
         2. Use sensory details and a strong narrative voice suitable for the subject.
         3. Incorporate specific facts from the uploaded documents and the interview.
         4. Output formatted Markdown.
         5. Do not include meta-commentary like "Here is the chapter". Just start writing the title and the text.
+        6. Use the specific location and dates provided in the context if available.
         `;
 
         this.broadcastLog(ws, "Starting Generation Stream...");
@@ -373,19 +402,27 @@ export class InterviewSession extends DurableObject {
             // Save final draft to state
             await this.state.storage.put("currentDraft", this.currentDraft);
         } catch (e: any) {
-            console.error("Writer Error", e);
-            this.broadcastLog(ws, `Writer Error: ${e.message}`);
+            if (e.name === 'AbortError') {
+                this.broadcastLog(ws, "Generation Aborted by User.");
+            } else {
+                console.error("Writer Error", e);
+                this.broadcastLog(ws, `Writer Error: ${e.message}`);
+            }
         }
     }
 
     async resetForNextChapter(ws: WebSocket) {
-        // 1. Archive the current draft (Optional: Save to DB chapters table if implementing full book structure)
-        // For now, we just reset the session state for the "next" chapter
+        this.broadcastLog(ws, "Archiving chapter and resetting for next...");
+
+        // 1. (Optional) In a full app, you would insert `this.currentDraft` into `chapters` DB table here.
+        // For now, we just proceed to clear the workspace.
         
-        // 2. Clear Session Data
-        this.history = []; // Reset Chat
-        this.notes = [];   // Reset Notes
-        this.mode = 'interview'; // Back to interview mode
+        // 2. Clear Ephemeral Session Data
+        // We KEEP: bookId, userId, bookContext (Outline), config
+        // We CLEAR: history (convo), notes (specific to chapter), currentDraft
+        this.history = []; 
+        this.notes = [];   
+        this.mode = 'interview'; 
         this.currentDraft = "";
 
         await this.state.storage.put("history", this.history);
@@ -394,10 +431,13 @@ export class InterviewSession extends DurableObject {
         await this.state.storage.put("currentDraft", this.currentDraft);
 
         // 3. Notify Frontend
-        ws.send(JSON.stringify({ type: 'init' })); // Force frontend refresh
+        ws.send(JSON.stringify({ type: 'init' })); // Force frontend state refresh
         
         // 4. Start new interview with greeting
-        const greeting = "I've saved that chapter. Let's move on to the next part of your story. What should we focus on next?";
+        // Determine next chapter from outline
+        // (Simple logic: just assume we are moving forward linearly or ask generic)
+        const greeting = "I've saved that chapter. We are now ready for the next phase of your life. Based on your outline, what should we discuss next?";
+        
         this.history.push({ role: 'assistant', content: greeting });
         await this.state.storage.put("history", this.history);
         ws.send(JSON.stringify({ type: 'response', content: greeting, role: 'assistant' }));
@@ -410,6 +450,9 @@ export class InterviewSession extends DurableObject {
         const apiKey = this.config.geminiKey;
         const model = "gemini-2.5-flash";
 
+        // Create AbortController for cancellation
+        this.abortController = new AbortController();
+
         // Use streamGenerateContent endpoint
         const url = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/google-ai-studio/v1beta/models/${model}:streamGenerateContent?alt=sse`;
 
@@ -421,8 +464,10 @@ export class InterviewSession extends DurableObject {
                 ...(this.config.aigToken ? { 'cf-aig-authorization': `Bearer ${this.config.aigToken}` } : {})
             },
             body: JSON.stringify({
+                // Inject the prompt as the USER message, effectively containing the System Context
                 contents: [{ role: "user", parts: [{ text: prompt }] }]
-            })
+            }),
+            signal: this.abortController.signal
         });
 
         if (!response.body) throw new Error("No response body");
@@ -431,35 +476,39 @@ export class InterviewSession extends DurableObject {
         const decoder = new TextDecoder();
         let buffer = "";
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
 
-            const chunk = decoder.decode(value, { stream: true });
-            buffer += chunk;
+                const chunk = decoder.decode(value, { stream: true });
+                buffer += chunk;
 
-            const lines = buffer.split("\n");
-            // Keep the last incomplete line in the buffer
-            buffer = lines.pop() || "";
+                const lines = buffer.split("\n");
+                // Keep the last incomplete line in the buffer
+                buffer = lines.pop() || "";
 
-            for (const line of lines) {
-                if (line.startsWith("data: ")) {
-                    const jsonStr = line.slice(6).trim();
-                    if (jsonStr === "[DONE]") return;
-                    
-                    try {
-                        const data = JSON.parse(jsonStr);
-                        const textChunk = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                        if (textChunk) {
-                            this.currentDraft += textChunk;
-                            // Stream to client
-                            ws.send(JSON.stringify({ type: 'draft_chunk', content: textChunk, reset: false }));
+                for (const line of lines) {
+                    if (line.startsWith("data: ")) {
+                        const jsonStr = line.slice(6).trim();
+                        if (jsonStr === "[DONE]") return;
+                        
+                        try {
+                            const data = JSON.parse(jsonStr);
+                            const textChunk = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                            if (textChunk) {
+                                this.currentDraft += textChunk;
+                                // Stream to client
+                                ws.send(JSON.stringify({ type: 'draft_chunk', content: textChunk, reset: false }));
+                            }
+                        } catch (e) {
+                            // ignore parsing errors on intermediate chunks
                         }
-                    } catch (e) {
-                        // ignore parsing errors on intermediate chunks
                     }
                 }
             }
+        } finally {
+            this.abortController = null; 
         }
     }
 

@@ -3,7 +3,7 @@ import { ChatInterface } from './ChatInterface';
 import { BookCanvas } from './BookCanvas';
 import { Notepad } from './Notepad';
 import { MapSelector } from './MapSelector'; 
-import { PenTool, BookOpen, Bug, Map as MapIcon, RefreshCw, ArrowRight } from 'lucide-react';
+import { PenTool, BookOpen, Bug, Map as MapIcon, RefreshCw, ArrowRight, XCircle } from 'lucide-react';
 import { getWsUrl } from '../utils/api';
 
 interface WorkspaceProps {
@@ -133,8 +133,14 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
         }
     };
 
+    const handleCancel = () => {
+        if (ws.current?.readyState === WebSocket.OPEN) {
+            ws.current.send(JSON.stringify({ type: 'cancel_generation' }));
+        }
+    }
+
     const handleNextChapter = () => {
-        if (confirm("Move to the next chapter? This will clear the chat history and notes for a fresh start.")) {
+        if (confirm("Move to the next chapter? This will clear the chat history and notes for a fresh start, but keep your personal details.")) {
             if (ws.current?.readyState === WebSocket.OPEN) {
                 ws.current.send(JSON.stringify({ type: 'next_chapter' }));
                 setMode('interview'); // Optimistic update
@@ -163,18 +169,26 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                             <span className="font-serif italic text-lg">Writing in progress...</span>
                         </div>
                         <p className="text-stone-400 text-sm mb-6">
-                            The biographer is drafting your chapter based on the interview notes and documents.
+                            The biographer is drafting your chapter based on the interview notes, transcripts, and your uploaded archives.
                         </p>
-                        <div className="flex gap-3">
-                            <button 
-                                onClick={handleRetry}
-                                className="flex-1 py-3 px-4 rounded bg-stone-800 text-stone-300 hover:text-white hover:bg-stone-700 transition-colors flex items-center justify-center gap-2 text-sm font-bold uppercase tracking-wide border border-white/5"
-                            >
-                                <RefreshCw size={16} /> Retry
-                            </button>
+                        <div className="flex flex-col gap-3">
+                            <div className="flex gap-3">
+                                <button 
+                                    onClick={handleCancel}
+                                    className="flex-1 py-3 px-4 rounded bg-stone-800 text-red-400 hover:text-red-300 hover:bg-stone-700 transition-colors flex items-center justify-center gap-2 text-sm font-bold uppercase tracking-wide border border-white/5"
+                                >
+                                    <XCircle size={16} /> Cancel
+                                </button>
+                                <button 
+                                    onClick={handleRetry}
+                                    className="flex-1 py-3 px-4 rounded bg-stone-800 text-stone-300 hover:text-white hover:bg-stone-700 transition-colors flex items-center justify-center gap-2 text-sm font-bold uppercase tracking-wide border border-white/5"
+                                >
+                                    <RefreshCw size={16} /> Retry
+                                </button>
+                            </div>
                             <button 
                                 onClick={handleNextChapter}
-                                className="flex-1 py-3 px-4 rounded bg-amber-700 text-white hover:bg-amber-600 transition-colors flex items-center justify-center gap-2 text-sm font-bold uppercase tracking-wide shadow-lg"
+                                className="w-full py-3 px-4 rounded bg-amber-700 text-white hover:bg-amber-600 transition-colors flex items-center justify-center gap-2 text-sm font-bold uppercase tracking-wide shadow-lg"
                             >
                                 Next Chapter <ArrowRight size={16} />
                             </button>
