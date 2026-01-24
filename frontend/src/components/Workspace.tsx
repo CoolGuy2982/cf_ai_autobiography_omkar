@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ChatInterface } from './ChatInterface';
 import { BookCanvas } from './BookCanvas';
 import { Notepad } from './Notepad';
-import { MapSelector } from './MapSelector'; 
+import { MapSelector } from './MapSelector';
 import { PenTool, BookOpen, Bug, Map as MapIcon, RefreshCw, ArrowRight, XCircle } from 'lucide-react';
 import { getWsUrl } from '../utils/api';
 
@@ -23,8 +23,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
     const [manuscript, setManuscript] = useState("");
     const [messages, setMessages] = useState<Message[]>([]);
     const [connected, setConnected] = useState(false);
-    
-    // 'writing' mode locks the chat and shows the book generation controls
     const [mode, setMode] = useState<'interview' | 'writing'>('interview');
     
     const [showDebug, setShowDebug] = useState(false);
@@ -58,7 +56,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                 else if (data.type === 'mode_sync') {
                     setMode(data.content);
                     if (data.content === 'writing') {
-                        setViewMode('book'); // Auto switch to book view
+                        setViewMode('book');
                     }
                 }
                 else if (data.type === 'response') {
@@ -73,12 +71,11 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                 else if (data.type === 'history') {
                     setMessages(data.content);
                 }
-                // === STREAMING HANDLER ===
                 else if (data.type === 'draft_chunk') {
                     if (data.reset) {
-                        setManuscript(data.content); // Reset or Start fresh
+                        setManuscript(data.content);
                     } else {
-                        setManuscript(prev => prev + data.content); // Append chunk
+                        setManuscript(prev => prev + data.content);
                     }
                     if (viewMode !== 'book') setViewMode('book');
                 }
@@ -118,15 +115,40 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
         }
     };
 
+    // === CHANGED: Smarter update logic to prevent overwriting AI notes ===
     const handleManualNoteUpdate = (updatedNotes: any[]) => {
-        if (updatedNotes.length === 0 && notes.length > 0) return;
+        if (updatedNotes.length === 0 && notes.length > 0 && notes.length > 1) {
+             // Safety check: Avoid accidentally clearing all notes via a UI glitch
+             return;
+        }
+
+        // Optimistically update UI
         setNotes(updatedNotes);
+
         if (ws.current?.readyState === WebSocket.OPEN) {
+            // Check if this is a simple content edit (patch)
+            if (updatedNotes.length === notes.length) {
+                const changedNote = updatedNotes.find((note, idx) => {
+                    const original = notes[idx];
+                    return original && note.id === original.id && note.content !== original.content;
+                });
+
+                if (changedNote) {
+                    // Send granular update
+                    ws.current.send(JSON.stringify({ 
+                        type: 'patch_note', 
+                        id: changedNote.id, 
+                        content: changedNote.content 
+                    }));
+                    return;
+                }
+            }
+            
+            // Fallback for Adds/Deletes: Send full list
             ws.current.send(JSON.stringify({ type: 'update_notes', content: updatedNotes }));
         }
     };
 
-    // --- WRITING ACTIONS ---
     const handleRetry = () => {
         if (ws.current?.readyState === WebSocket.OPEN) {
             ws.current.send(JSON.stringify({ type: 'retry_chapter' }));
@@ -140,12 +162,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
     }
 
     const handleNextChapter = () => {
-        if (confirm("Move to the next chapter? This will clear the chat history and notes for a fresh start, but keep your personal details.")) {
+        if (confirm("Move to the next chapter? This will clear the chat history and notes for a fresh start.")) {
             if (ws.current?.readyState === WebSocket.OPEN) {
                 ws.current.send(JSON.stringify({ type: 'next_chapter' }));
-                setMode('interview'); // Optimistic update
+                setMode('interview');
                 setViewMode('notepad');
-                setMessages([]); // Clear local messages
+                setMessages([]);
             }
         }
     };
@@ -158,10 +180,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                     messages={messages} 
                     onSendMessage={handleSendMessage} 
                     connected={connected}
-                    disabled={mode === 'writing'} // Hide input when writing
+                    disabled={mode === 'writing'} 
                 /> 
 
-                {/* Writing Mode Controls Overlay */}
                 {mode === 'writing' && (
                     <div className="absolute bottom-0 left-0 right-0 bg-wood-dark/95 border-t border-white/10 p-6 backdrop-blur-md">
                         <div className="flex items-center gap-3 mb-4 text-amber-500 animate-pulse">
@@ -201,7 +222,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
             <div className="flex-1 h-full relative flex flex-col bg-wood-pattern">
                 <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-black/20 via-transparent to-black/40 z-40" />
 
-                {/* View Switcher */}
                 <div className="absolute top-8 z-50 flex justify-center w-full pointer-events-none">
                     <div className="bg-black/40 backdrop-blur-md p-1.5 rounded-full flex gap-2 border border-white/10 shadow-xl pointer-events-auto">
                         <button 
@@ -256,7 +276,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                     />
                 </div>
                 
-                {/* Debug Toggle */}
                 <button 
                     onClick={() => setShowDebug(!showDebug)}
                     className="absolute bottom-4 left-4 z-50 p-2 bg-black/50 text-white/30 rounded-full hover:text-white hover:bg-black/80 transition-colors"

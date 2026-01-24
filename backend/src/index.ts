@@ -59,15 +59,14 @@ app.post('/api/onboarding', async (c) => {
         await c.env.DB.prepare(`INSERT INTO users (id, name, dob, created_at) VALUES (?, ?, ?, ?)`).bind(id, name, dob, Date.now()).run();
 
         if (birthLocation) {
-            // CRITICAL: Ensure 'label' (City Name) is saved. 
-            // Fallback to 'Birthplace' only if label is missing.
+            // Ensure label is saved correctly for the Context Gatherer
             await c.env.DB.prepare(`INSERT INTO locations (id, user_id, lat, lng, label, date_start) VALUES (?, ?, ?, ?, ?, ?)`).bind(
                 crypto.randomUUID(), 
                 id, 
                 birthLocation.lat, 
                 birthLocation.lng, 
                 birthLocation.label || 'Birthplace', 
-                dob
+                dob // Use DOB as date_start for the birthplace
             ).run();
         }
 
@@ -99,11 +98,12 @@ app.post('/api/books/start', async (c) => {
     try {
         const { userId, title } = await c.req.json();
 
-        // 1. Fetch Context
+        // 1. Fetch Context for Outline Generation
         const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first();
         const list = await c.env.BUCKET.list({ prefix: `documents/${userId}/` });
      
         let docContext = "";
+        
         if (list && list.objects) {
             for (const object of list.objects) {
                 const file = await c.env.BUCKET.get(object.key);
@@ -139,10 +139,15 @@ app.post('/api/books/start', async (c) => {
 
         // 3. Call AI
         const systemPrompt = `You are an expert biographer.
-        User: ${user?.name}, Born: ${user?.dob}. Create an outline. You MUST call 'save_outline'.`;
+        User: ${user?.name}, Born: ${user?.dob}. 
+        
+        Based on the attached documents, create a compelling book outline for their autobiography. 
+        You MUST call the 'save_outline' function to return the result.`;
+        
         const userContent = `Documents:\n${docContext}`;
 
         const gatewayUrl = `https://gateway.ai.cloudflare.com/v1/${c.env.CF_ACCOUNT_ID}/${c.env.CF_GATEWAY_ID}/google-ai-studio/v1beta/models/gemini-2.5-flash:generateContent`;
+        
         const response = await fetch(gatewayUrl, {
             method: 'POST',
             headers: {
