@@ -3,14 +3,18 @@ import { MapSelector } from './MapSelector';
 import { motion } from 'framer-motion';
 
 interface OnboardingProps {
-    onComplete: (data: { name: string; dob: string; birthLocation: { lat: number; lng: number } }) => void;
+    onComplete: (data: { 
+        name: string; 
+        dob: string; 
+        birthLocation: { lat: number; lng: number; label: string } 
+    }) => void;
 }
 
 export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
     const [step, setStep] = useState(1);
     const [name, setName] = useState('');
     const [dob, setDob] = useState('');
-    const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
+    const [location, setLocation] = useState<{ lat: number; lng: number; label: string } | null>(null);
 
     const handleNext = () => {
         if (step === 1 && name && dob) setStep(2);
@@ -27,7 +31,6 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 transition={{ duration: 0.6, ease: "easeOut" }}
                 className="w-full max-w-lg bg-paper p-10 rounded-sm shadow-card border-t border-white/50 relative"
             >
-                {/* Decorative Paper Texture */}
                 <div className="absolute inset-0 bg-wood-pattern opacity-10 pointer-events-none mix-blend-multiply"></div>
                 
                 <div className="relative z-10 text-ink">
@@ -70,9 +73,13 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                                 <p className="text-stone-500">Pin where your story began.</p>
                             </div>
                             <div className="border-4 border-white shadow-inner rounded-lg overflow-hidden">
-                                <MapSelector onLocationSelect={(lat, lng) => setLocation({ lat, lng })} />
+                                <MapSelector onLocationSelect={(lat, lng, label) => setLocation({ lat, lng, label: label || "Unknown Location" })} />
                             </div>
-                            {location && <p className="text-sm text-accent font-medium font-serif italic">Location marked.</p>}
+                            {location && (
+                                <p className="text-sm text-accent font-medium font-serif italic">
+                                    Born in: {location.label}
+                                </p>
+                            )}
                         </div>
                     )}
 

@@ -34,7 +34,7 @@ app.get('/api/session/:id/connect', async (c) => {
     const idObj = c.env.INTERVIEW_SESSION.idFromName(id);
     const stub = c.env.INTERVIEW_SESSION.get(idObj);
 
-    // FIX: Pass credentials explicitly to the DO to avoid missing env var issues
+    // Pass credentials to DO via URL params
     const url = new URL(c.req.url);
     url.pathname = "/websocket";
     url.searchParams.set("bookId", id);
@@ -55,10 +55,20 @@ app.post('/api/onboarding', async (c) => {
     try {
         const { name, dob, birthLocation } = await c.req.json();
         const id = `user_${Date.now()}`;
+        
         await c.env.DB.prepare(`INSERT INTO users (id, name, dob, created_at) VALUES (?, ?, ?, ?)`).bind(id, name, dob, Date.now()).run();
 
         if (birthLocation) {
-            await c.env.DB.prepare(`INSERT INTO locations (id, user_id, lat, lng, label, date_start) VALUES (?, ?, ?, ?, ?, ?)`).bind(crypto.randomUUID(), id, birthLocation.lat, birthLocation.lng, 'Birthplace', dob).run();
+            // CRITICAL: Ensure 'label' (City Name) is saved. 
+            // Fallback to 'Birthplace' only if label is missing.
+            await c.env.DB.prepare(`INSERT INTO locations (id, user_id, lat, lng, label, date_start) VALUES (?, ?, ?, ?, ?, ?)`).bind(
+                crypto.randomUUID(), 
+                id, 
+                birthLocation.lat, 
+                birthLocation.lng, 
+                birthLocation.label || 'Birthplace', 
+                dob
+            ).run();
         }
 
         return c.json({ success: true, userId: id });
@@ -91,9 +101,8 @@ app.post('/api/books/start', async (c) => {
 
         // 1. Fetch Context
         const user = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first();
-        const location = await c.env.DB.prepare("SELECT * FROM locations WHERE user_id = ?").bind(userId).first();
         const list = await c.env.BUCKET.list({ prefix: `documents/${userId}/` });
-        
+     
         let docContext = "";
         if (list && list.objects) {
             for (const object of list.objects) {
@@ -129,11 +138,11 @@ app.post('/api/books/start', async (c) => {
         };
 
         // 3. Call AI
-        const systemPrompt = `You are an expert biographer. User: ${user?.name}, Born: ${user?.dob}. Create an outline. You MUST call 'save_outline'.`;
+        const systemPrompt = `You are an expert biographer.
+        User: ${user?.name}, Born: ${user?.dob}. Create an outline. You MUST call 'save_outline'.`;
         const userContent = `Documents:\n${docContext}`;
 
         const gatewayUrl = `https://gateway.ai.cloudflare.com/v1/${c.env.CF_ACCOUNT_ID}/${c.env.CF_GATEWAY_ID}/google-ai-studio/v1beta/models/gemini-2.5-flash:generateContent`;
-
         const response = await fetch(gatewayUrl, {
             method: 'POST',
             headers: {

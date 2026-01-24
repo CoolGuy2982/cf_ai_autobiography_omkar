@@ -27,17 +27,12 @@ export class InterviewSession extends DurableObject {
     history: ThreadMessage[] = [];
     bookId: string = "";
     userId: string = "";
-    bookContext: any = null; // The Outline
+    bookContext: any = null;
     notes: NoteItem[] = [];
     mode: 'interview' | 'writing' = 'interview';
     isProcessing: boolean = false;
-    
-    // We track the current draft content in memory during generation
-    currentDraft: string = ""; 
-    
-    // Controller to cancel generation streams
+    currentDraft: string = "";
     abortController: AbortController | null = null;
-    
     config = {
         accountId: "",
         gatewayId: "",
@@ -49,12 +44,10 @@ export class InterviewSession extends DurableObject {
         super(state, env);
         this.state = state;
         this.env = env;
-        
         this.config.accountId = env.CF_ACCOUNT_ID;
         this.config.gatewayId = env.CF_GATEWAY_ID;
         this.config.geminiKey = env.GEMINI_API_KEY;
         this.config.aigToken = env.CF_AIG_TOKEN || "";
-
         this.state.blockConcurrencyWhile(async () => {
             const stored = await this.state.storage.get<{ 
                 history: ThreadMessage[], 
@@ -76,7 +69,6 @@ export class InterviewSession extends DurableObject {
         });
     }
 
-    // Helper to send logs to the frontend
     broadcastLog(ws: WebSocket, message: string) {
         try {
             ws.send(JSON.stringify({ type: 'debug_log', content: `[Server] ${message}` }));
@@ -85,14 +77,11 @@ export class InterviewSession extends DurableObject {
 
     async fetch(request: Request): Promise<Response> {
         const url = new URL(request.url);
-
         if (url.pathname === "/websocket") {
             const queryBookId = url.searchParams.get("bookId");
             if (queryBookId) {
                 this.bookId = queryBookId;
                 await this.state.storage.put("bookId", this.bookId);
-                
-                // Lazy load userId if missing
                 if (!this.userId) {
                     const book = await this.env.DB.prepare("SELECT user_id FROM books WHERE id = ?").bind(this.bookId).first();
                     if (book) {
@@ -113,7 +102,6 @@ export class InterviewSession extends DurableObject {
             if (aigTok) this.config.aigToken = aigTok;
 
             await this.state.storage.put("config", this.config);
-
             const upgradeHeader = request.headers.get("Upgrade");
             if (!upgradeHeader || upgradeHeader !== "websocket") {
                 return new Response("Expected Upgrade: websocket", { status: 426 });
@@ -121,7 +109,6 @@ export class InterviewSession extends DurableObject {
 
             const pair = new WebSocketPair();
             this.state.acceptWebSocket(pair[1]);
-
             return new Response(null, { status: 101, webSocket: pair[0] });
         }
         return new Response("Not found", { status: 404 });
@@ -131,20 +118,16 @@ export class InterviewSession extends DurableObject {
         const text = typeof message === "string" ? message : new TextDecoder().decode(message);
         try {
             const data = JSON.parse(text);
-
             if (data.type === 'init') {
                 if (!this.bookContext) await this.loadBookContext();
-                
-                // Send current state
                 ws.send(JSON.stringify({ type: 'outline', content: this.bookContext }));
                 ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
                 ws.send(JSON.stringify({ type: 'mode_sync', content: this.mode }));
-                
-                // If we have a draft in progress or done, send it
                 if (this.currentDraft) {
                      ws.send(JSON.stringify({ type: 'draft_chunk', content: this.currentDraft, reset: true }));
                 }
 
+                // If starting fresh, send opening
                 if (this.history.length === 0 && this.mode === 'interview') {
                     const firstChapter = this.bookContext?.chapters?.[0];
                     const opening = `I've reviewed your outline. We are starting with **${firstChapter?.title || 'Chapter 1'}**. ${firstChapter?.summary || ''}\n\nLet's begin.`;
@@ -177,7 +160,6 @@ export class InterviewSession extends DurableObject {
                     this.abortController.abort();
                     this.abortController = null;
                 }
-                // Revert to interview mode
                 this.mode = 'interview';
                 await this.state.storage.put("mode", this.mode);
                 ws.send(JSON.stringify({ type: 'mode_sync', content: this.mode }));
@@ -187,10 +169,7 @@ export class InterviewSession extends DurableObject {
                 await this.resetForNextChapter(ws);
             }
             else if (data.type === 'message') {
-                if (this.isProcessing || this.mode === 'writing') {
-                    return; 
-                }
-
+                if (this.isProcessing || this.mode === 'writing') return;
                 this.history.push({ role: 'user', content: data.content });
                 await this.state.storage.put("history", this.history);
                 await this.processTurn(ws);
@@ -219,6 +198,7 @@ export class InterviewSession extends DurableObject {
         }
     }
 
+    // --- MAIN INTERVIEW LOGIC ---
     async runInterviewerAgent(ws: WebSocket) {
         const tools = [
             {
@@ -249,6 +229,9 @@ export class InterviewSession extends DurableObject {
         let keepGoing = true;
         let turns = 0;
         
+        // --- KEY FIX: Fetch Context explicitly before every loop ---
+        const backgroundContext = await this.gatherFullContext();
+        
         while (keepGoing && turns < 5) {
             turns++;
             const currentNotesContext = this.notes.length > 0 
@@ -256,17 +239,24 @@ export class InterviewSession extends DurableObject {
                 : "[(No notes yet)]";
 
             const systemPrompt = `
-            You are an expert biographer.
-            GOAL: Interview the user to gather material for their autobiography chapter.
+            You are an expert biographer and interviewer.
+            
+            === USER IDENTITY (CRITICAL) ===
+            ${backgroundContext}
+            ================================
             
             === CURRENT NOTEPAD ===
             ${currentNotesContext}
             =======================
             
-            RULES:
-            1. Use 'create_note' for brand new topics.
-            2. Use 'append_to_note' to add details.
-            3. Be conversational.
+            GOAL: Interview the user to gather material for their autobiography chapter.
+            
+            INSTRUCTIONS:
+            1. You KNOW the user's name, DOB, and Birth Location from the Identity section above. Do NOT ask for them.
+            2. If the user mentions a location, assume it relates to their known history unless stated otherwise.
+            3. Use 'create_note' for brand new topics.
+            4. Use 'append_to_note' to add details.
+            5. Be conversational, empathetic, and genuinely curious.
             `;
 
             try {
@@ -296,7 +286,6 @@ export class InterviewSession extends DurableObject {
                         this.mode = 'writing';
                         await this.state.storage.put("mode", this.mode);
                         ws.send(JSON.stringify({ type: 'mode_sync', content: this.mode }));
-                        
                         await this.runWriterAgent(ws);
                         return;
                     }
@@ -317,54 +306,63 @@ export class InterviewSession extends DurableObject {
         }
     }
 
-    // --- CONTEXT GATHERING FOR WRITER ---
+    // --- CONTEXT GATHERING FIX ---
     async gatherFullContext(): Promise<string> {
         let context = "";
-
         try {
-            // 1. User Bio & Location
             if (this.userId) {
                 const user = await this.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(this.userId).first();
-                const loc = await this.env.DB.prepare("SELECT * FROM locations WHERE user_id = ?").bind(this.userId).first();
                 
-                context += `\n# SUBJECT BIO\nName: ${user?.name || "Unknown"}\nDOB: ${user?.dob || "Unknown"}\n`;
-                if (loc) context += `Birth/Primary Location: ${loc.label} (${loc.lat}, ${loc.lng})\n`;
-            }
+                // FIXED QUERY: Just get all locations ordered by date. No complex filtering.
+                // The first one (earliest date) IS the birth location.
+                const locations = await this.env.DB.prepare("SELECT * FROM locations WHERE user_id = ? ORDER BY date_start ASC").bind(this.userId).all();
+                const birthLocation = locations.results?.[0] as any;
 
-            // 2. Uploaded Documents (Full Text)
-            if (this.userId) {
-                context += `\n# UPLOADED DOCUMENTS (Background Context)\n`;
-                const list = await this.env.BUCKET.list({ prefix: `documents/${this.userId}/` });
-                if (list && list.objects.length > 0) {
-                    for (const object of list.objects) {
-                        const file = await this.env.BUCKET.get(object.key);
-                        if (file) {
-                            context += `\n## File: ${object.key}\n${await file.text()}\n`;
-                        }
-                    }
+                context += `Name: ${user?.name || "Unknown"}\n`;
+                context += `Date of Birth: ${user?.dob || "Unknown"}\n`;
+                
+                if (birthLocation) {
+                    context += `Birth Location: ${birthLocation.label} (Coordinates: ${birthLocation.lat}, ${birthLocation.lng})\n`;
                 } else {
-                    context += "(No documents uploaded)\n";
+                    context += `Birth Location: [Not provided yet]\n`;
+                }
+
+                // Add other locations as timeline
+                if (locations.results && locations.results.length > 1) {
+                    context += `Other Known Locations: ${locations.results.slice(1).map((l:any) => l.label).join(", ")}\n`;
                 }
             }
 
-            // 3. Interview Notes
-            context += `\n# INTERVIEW NOTES (Latest Findings)\n`;
+            // Documents
+            if (this.userId) {
+                const list = await this.env.BUCKET.list({ prefix: `documents/${this.userId}/` });
+                if (list && list.objects.length > 0) {
+                    context += `\n[UPLOADED DOCUMENT CONTENT]\n`;
+                    for (const object of list.objects) {
+                        const file = await this.env.BUCKET.get(object.key);
+                        if (file) {
+                            // Limit text length to avoid context overflow if needed, but Gemini Flash has 1M context so we are good.
+                            context += `--- File: ${object.key} ---\n${await file.text()}\n`;
+                        }
+                    }
+                }
+            }
+
+            // Notes
             if (this.notes.length > 0) {
+                context += `\n[INTERVIEW NOTES]\n`;
                 this.notes.forEach(n => {
                     context += `- ${n.content}\n`;
                 });
-            } else {
-                context += "(No notes taken)\n";
             }
 
-            // 4. Interview Transcript
-            context += `\n# INTERVIEW TRANSCRIPT (Raw)\n`;
+            // Raw Transcript
+            context += `\n[CHAT HISTORY]\n`;
             this.history.forEach(m => {
                 if (m.content && (m.role === 'user' || m.role === 'assistant')) {
                     context += `${m.role.toUpperCase()}: ${m.content}\n`;
                 }
             });
-
         } catch (e: any) {
             console.error("Context Gather Error:", e);
             context += `\n[System Error gathering context: ${e.message}]\n`;
@@ -378,10 +376,12 @@ export class InterviewSession extends DurableObject {
         const fullContext = await this.gatherFullContext();
         
         const systemPrompt = `
-        You are a world-class biographer. 
+        You are a world-class biographer.
         Your task is to write the next chapter of the autobiography based on the gathered materials below.
         
+        === SOURCE MATERIAL ===
         ${fullContext}
+        =======================
         
         === WRITING INSTRUCTIONS ===
         1. Write in First Person (I).
@@ -393,13 +393,11 @@ export class InterviewSession extends DurableObject {
         `;
 
         this.broadcastLog(ws, "Starting Generation Stream...");
-        this.currentDraft = ""; // Reset draft
+        this.currentDraft = ""; 
         ws.send(JSON.stringify({ type: 'draft_chunk', content: "", reset: true }));
-
         try {
             await this.streamGemini(systemPrompt, ws);
             this.broadcastLog(ws, "Generation Complete.");
-            // Save final draft to state
             await this.state.storage.put("currentDraft", this.currentDraft);
         } catch (e: any) {
             if (e.name === 'AbortError') {
@@ -413,14 +411,7 @@ export class InterviewSession extends DurableObject {
 
     async resetForNextChapter(ws: WebSocket) {
         this.broadcastLog(ws, "Archiving chapter and resetting for next...");
-
-        // 1. (Optional) In a full app, you would insert `this.currentDraft` into `chapters` DB table here.
-        // For now, we just proceed to clear the workspace.
-        
-        // 2. Clear Ephemeral Session Data
-        // We KEEP: bookId, userId, bookContext (Outline), config
-        // We CLEAR: history (convo), notes (specific to chapter), currentDraft
-        this.history = []; 
+        this.history = [];
         this.notes = [];   
         this.mode = 'interview'; 
         this.currentDraft = "";
@@ -430,14 +421,9 @@ export class InterviewSession extends DurableObject {
         await this.state.storage.put("mode", this.mode);
         await this.state.storage.put("currentDraft", this.currentDraft);
 
-        // 3. Notify Frontend
-        ws.send(JSON.stringify({ type: 'init' })); // Force frontend state refresh
+        ws.send(JSON.stringify({ type: 'init' }));
         
-        // 4. Start new interview with greeting
-        // Determine next chapter from outline
-        // (Simple logic: just assume we are moving forward linearly or ask generic)
         const greeting = "I've saved that chapter. We are now ready for the next phase of your life. Based on your outline, what should we discuss next?";
-        
         this.history.push({ role: 'assistant', content: greeting });
         await this.state.storage.put("history", this.history);
         ws.send(JSON.stringify({ type: 'response', content: greeting, role: 'assistant' }));
@@ -449,13 +435,8 @@ export class InterviewSession extends DurableObject {
         const gatewayId = this.config.gatewayId;
         const apiKey = this.config.geminiKey;
         const model = "gemini-2.5-flash";
-
-        // Create AbortController for cancellation
         this.abortController = new AbortController();
-
-        // Use streamGenerateContent endpoint
         const url = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/google-ai-studio/v1beta/models/${model}:streamGenerateContent?alt=sse`;
-
         const response = await fetch(url, {
             method: 'POST',
             headers: {
@@ -464,7 +445,6 @@ export class InterviewSession extends DurableObject {
                 ...(this.config.aigToken ? { 'cf-aig-authorization': `Bearer ${this.config.aigToken}` } : {})
             },
             body: JSON.stringify({
-                // Inject the prompt as the USER message, effectively containing the System Context
                 contents: [{ role: "user", parts: [{ text: prompt }] }]
             }),
             signal: this.abortController.signal
@@ -485,7 +465,6 @@ export class InterviewSession extends DurableObject {
                 buffer += chunk;
 
                 const lines = buffer.split("\n");
-                // Keep the last incomplete line in the buffer
                 buffer = lines.pop() || "";
 
                 for (const line of lines) {
@@ -498,7 +477,6 @@ export class InterviewSession extends DurableObject {
                             const textChunk = data.candidates?.[0]?.content?.parts?.[0]?.text;
                             if (textChunk) {
                                 this.currentDraft += textChunk;
-                                // Stream to client
                                 ws.send(JSON.stringify({ type: 'draft_chunk', content: textChunk, reset: false }));
                             }
                         } catch (e) {
@@ -508,11 +486,10 @@ export class InterviewSession extends DurableObject {
                 }
             }
         } finally {
-            this.abortController = null; 
+            this.abortController = null;
         }
     }
 
-    // Standard Non-Streaming Call (for Interviewer)
     async callGemini(systemInstruction: string, tools?: any[]) {
         const accountId = this.config.accountId;
         const gatewayId = this.config.gatewayId;
@@ -520,13 +497,11 @@ export class InterviewSession extends DurableObject {
         const model = "gemini-2.5-flash";
         
         const url = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/google-ai-studio/v1beta/models/${model}:generateContent`;
-        
         const contents = this.history.map(m => {
             if(m.role === 'tool') return { role: 'function', parts: [{ functionResponse: m.functionResponse }] };
             if(m.functionCall) return { role: 'model', parts: [{ functionCall: m.functionCall }] };
             return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] };
         });
-
         const body: any = { contents, system_instruction: { parts: [{ text: systemInstruction }] } };
         if (tools) body.tools = [{ function_declarations: tools }];
 
@@ -539,10 +514,8 @@ export class InterviewSession extends DurableObject {
             },
             body: JSON.stringify(body)
         });
-
         if (!resp.ok) throw new Error(`AI Error: ${resp.status}`);
         const data: any = await resp.json();
-        
         return {
             text: data.candidates?.[0]?.content?.parts?.[0]?.text,
             functionCalls: data.candidates?.[0]?.content?.parts?.filter((p:any) => p.functionCall).map((p:any) => p.functionCall)
