@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Send, Sparkles } from 'lucide-react';
 import { cn } from '../utils/cn'; 
 import Markdown from 'react-markdown';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -17,13 +17,93 @@ interface ChatInterfaceProps {
     isAnalyzing?: boolean; 
 }
 
+// === GENIUS COMPONENT: THE LIQUID THOUGHT ENGINE ===
+const BiographerThinking: React.FC = () => {
+    const [phase, setPhase] = useState(0);
+    const phrases = ["Consulting archives...", "Reflecting on details...", "Weaving the narrative...", "Connecting memories..."];
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setPhase(p => (p + 1) % phrases.length);
+        }, 3000);
+        return () => clearInterval(interval);
+    }, []);
+
+    return (
+        <div className="flex items-center gap-4 py-2 pl-2">
+            {/* The Organic Orb Container */}
+            <div className="relative w-8 h-8 flex items-center justify-center">
+                {/* 1. Core Morphing Blob (The "Mind") */}
+                <div className="absolute inset-0 bg-amber-600/20 blur-md rounded-full animate-pulse"></div>
+                
+                {/* 2. The Liquid Ink Effect */}
+                <div className="relative w-full h-full filter url('#goo')">
+                    <motion.div 
+                        className="absolute inset-0 bg-gradient-to-tr from-amber-600 to-orange-400 rounded-full"
+                        animate={{
+                            borderRadius: [
+                                "60% 40% 30% 70% / 60% 30% 70% 40%",
+                                "30% 60% 70% 40% / 50% 60% 30% 60%",
+                                "60% 40% 30% 70% / 60% 30% 70% 40%"
+                            ]
+                        }}
+                        transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
+                    />
+                    <motion.div 
+                        className="absolute w-2 h-2 bg-amber-500 rounded-full top-1/2 left-1/2"
+                        animate={{ x: [0, 12, 0], y: [0, -8, 0], scale: [1, 0.8, 1] }}
+                        transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+                    />
+                    <motion.div 
+                        className="absolute w-1.5 h-1.5 bg-orange-300 rounded-full top-1/2 left-1/2"
+                        animate={{ x: [0, -10, 0], y: [0, 10, 0], scale: [1, 0.5, 1] }}
+                        transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut", delay: 0.5 }}
+                    />
+                </div>
+
+                <svg width="0" height="0" className="absolute">
+                    <defs>
+                        <filter id="goo">
+                            <feGaussianBlur in="SourceGraphic" stdDeviation="2" result="blur" />
+                            <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo" />
+                            <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+                        </filter>
+                    </defs>
+                </svg>
+            </div>
+
+            {/* 3. The "Breathing" Text */}
+            <div className="h-6 overflow-hidden relative w-48">
+                <AnimatePresence mode='wait'>
+                    <motion.span 
+                        key={phase}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -10 }}
+                        transition={{ duration: 0.5 }}
+                        className="block text-xs font-serif italic text-amber-500/80 tracking-wide"
+                    >
+                        {phrases[phase]}
+                    </motion.span>
+                </AnimatePresence>
+            </div>
+        </div>
+    );
+};
+
+
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onSendMessage, connected, disabled, isAnalyzing }) => {
     const [input, setInput] = useState('');
     const scrollRef = useRef<HTMLDivElement>(null);
+    const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+    // Auto-scroll to bottom
     useEffect(() => {
         if (scrollRef.current) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+            scrollRef.current.scrollTo({
+                top: scrollRef.current.scrollHeight,
+                behavior: "smooth"
+            });
         }
     }, [messages, disabled, isAnalyzing]);
 
@@ -31,11 +111,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onS
         if (!input.trim()) return;
         onSendMessage(input);
         setInput('');
+        
+        // === FIX: Reset height manually ===
+        if (textareaRef.current) {
+            textareaRef.current.style.height = '60px'; // Reset to min-height
+        }
     };
 
     const isInputHidden = disabled || isAnalyzing;
+    const isThinking = messages.length > 0 && messages[messages.length - 1].role === 'user';
 
-    // Removed "overflow-hidden" from the root container to allow glow spillover
     return (
         <div className="flex flex-col h-full bg-white/5 backdrop-blur-2xl border-r border-white/10 shadow-[5px_0_30px_0_rgba(0,0,0,0.3)] text-stone-100 relative">
             {/* Header */}
@@ -54,7 +139,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onS
                 </div>
             </div>
 
-            {/* Chat History or Analyzing Overlay */}
+            {/* Chat History */}
             <div className="flex-1 relative z-10 min-h-0">
                 {isAnalyzing ? (
                     <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -92,7 +177,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onS
                         </motion.p>
                     </div>
                 ) : (
-                    <div className={cn("absolute inset-0 overflow-y-auto p-8 space-y-10 custom-scrollbar transition-all duration-500", isInputHidden ? "pb-8" : "pb-8")} ref={scrollRef}>
+                    <div className={cn("absolute inset-0 overflow-y-auto p-8 space-y-8 custom-scrollbar transition-all duration-500", isInputHidden ? "pb-8" : "pb-8")} ref={scrollRef}>
                         {messages.length === 0 && connected && (
                             <div className="text-center text-white/30 italic mt-10">
                                 Biographer is ready to begin...
@@ -100,10 +185,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onS
                         )}
                         
                         {messages.map((m, i) => (
-                            <div key={i} className={cn(
-                                "flex flex-col gap-3 max-w-[95%]",
-                                m.role === 'user' ? "ml-auto items-end" : "items-start"
-                            )}>
+                            <motion.div 
+                                key={i} 
+                                initial={{ opacity: 0, y: 20 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className={cn(
+                                    "flex flex-col gap-3 max-w-[95%]",
+                                    m.role === 'user' ? "ml-auto items-end" : "items-start"
+                                )}
+                            >
                                 <span className="text-[11px] uppercase tracking-[0.2em] text-white/30 font-bold ml-1">
                                     {m.role === 'user' ? 'Subject' : 'Biographer'}
                                 </span>
@@ -114,29 +204,41 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onS
                                         ? "bg-amber-600/90 text-white border-amber-500/50 rounded-2xl rounded-tr-sm px-6 py-4" 
                                         : "bg-black/40 text-stone-100 border-white/5 rounded-2xl rounded-tl-sm px-6 py-5" 
                                 )}>
-                                    {m.content ? (
-                                        <Markdown components={{
-                                            p: ({children}) => (
-                                                <p className={cn(
-                                                    "mb-3 last:mb-0 leading-relaxed",
-                                                    m.role === 'assistant' ? "font-serif text-[19px]" : "font-sans text-[16px]"
-                                                )}>
-                                                    {children}
-                                                </p>
-                                            ),
-                                            strong: ({children}) => <span className="font-bold text-white bg-white/10 px-1 rounded">{children}</span>,
-                                            em: ({children}) => <span className="italic text-white/80">{children}</span>,
-                                            ul: ({children}) => <ul className="list-disc pl-5 mb-2 space-y-1 marker:text-white/50">{children}</ul>,
-                                            li: ({children}) => <li className={m.role === 'assistant' ? "font-serif text-lg" : "font-sans text-base"}>{children}</li>
-                                        }}>
-                                            {m.content}
-                                        </Markdown>
-                                    ) : (
-                                        <span className="italic text-white/40">Writing...</span>
-                                    )}
+                                    <Markdown components={{
+                                        p: ({children}) => (
+                                            <p className={cn(
+                                                "mb-3 last:mb-0 leading-relaxed",
+                                                m.role === 'assistant' ? "font-serif text-[19px]" : "font-sans text-[16px]"
+                                            )}>
+                                                {children}
+                                            </p>
+                                        ),
+                                        strong: ({children}) => <span className="font-bold text-white bg-white/10 px-1 rounded">{children}</span>,
+                                        em: ({children}) => <span className="italic text-white/80">{children}</span>,
+                                        ul: ({children}) => <ul className="list-disc pl-5 mb-2 space-y-1 marker:text-white/50">{children}</ul>,
+                                        li: ({children}) => <li className={m.role === 'assistant' ? "font-serif text-lg" : "font-sans text-base"}>{children}</li>
+                                    }}>
+                                        {m.content}
+                                    </Markdown>
                                 </div>
-                            </div>
+                            </motion.div>
                         ))}
+
+                        {isThinking && (
+                            <motion.div 
+                                initial={{ opacity: 0, scale: 0.95 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.95 }}
+                                className="items-start max-w-[95%] mt-4"
+                            >
+                                <span className="text-[11px] uppercase tracking-[0.2em] text-amber-500/50 font-bold ml-1 mb-2 block">
+                                    Biographer
+                                </span>
+                                <div className="bg-black/20 border border-white/5 rounded-2xl rounded-tl-sm px-4 py-3 backdrop-blur-md inline-block">
+                                    <BiographerThinking />
+                                </div>
+                            </motion.div>
+                        )}
                     </div>
                 )}
             </div>
@@ -147,10 +249,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages = [], onS
                 isInputHidden ? "max-h-0 opacity-0 p-0 overflow-hidden" : "max-h-[200px] opacity-100 overflow-visible"
             )}>
                 <div className="relative group">
-                    {/* The glow layer now sits here without clipping */}
                     <div className="absolute -inset-1 bg-gradient-to-r from-amber-600 to-orange-700 rounded-2xl opacity-0 group-focus-within:opacity-40 transition duration-500 blur-lg"></div>
                     <div className="relative flex items-center bg-[#1c1917] rounded-2xl shadow-2xl border border-white/10">
                         <textarea
+                            ref={textareaRef}
                             className="flex-1 bg-transparent p-5 text-base font-sans text-white placeholder:text-white/20 focus:outline-none resize-none overflow-hidden"
                             placeholder="Type your response..."
                             rows={1}

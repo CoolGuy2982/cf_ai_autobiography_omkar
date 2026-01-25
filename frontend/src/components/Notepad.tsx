@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronRight, ChevronLeft, Plus } from 'lucide-react';
 import { cn } from '../utils/cn';
@@ -31,13 +31,58 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, outline, visible, onUpd
     const NOTES_PER_PAGE = 8;
     const maxNotePages = Math.ceil(Math.max(notes.length, 1) / NOTES_PER_PAGE);
 
-    // Auto-open logic
+    // Track previous note count to detect additions
+    const prevNoteCount = useRef(notes.length);
+    const manualAddTriggered = useRef(false);
+
+    // === AUTO FLIP & FOCUS LOGIC ===
     useEffect(() => {
-        if (notes.length > 0 && page === 0) {
-            // Optional: Auto-flip to notes if user adds one? 
-            // For now, let's keep it manual unless specifically requested to avoid jumping.
+        // If notes length increased
+        if (notes.length > prevNoteCount.current) {
+            const lastIndex = notes.length - 1;
+            const targetPage = Math.ceil((lastIndex + 1) / NOTES_PER_PAGE);
+            
+            // 1. Flip to the page if we aren't there
+            if (page !== targetPage && page !== 0) { // Keep 0 if viewing outline unless user wants to see notes? 
+                // Actually, requirement says "auto flip to the note AI just added". 
+                // We should flip even if on page 0 if it's relevant context.
+                // But usually Outline is separate. Let's flip if we are in Note mode (page > 0) OR if it was a manual add.
+                
+                if (page > 0 || manualAddTriggered.current) {
+                    setDirection('next');
+                    setIsFlipping(true);
+                    setPage(targetPage);
+                    setTimeout(() => setIsFlipping(false), 800);
+                }
+            } else if (page === 0 && !manualAddTriggered.current) {
+                // If AI adds a note while we look at outline, maybe just show a notification dot? 
+                // For now, let's strictly follow "auto flip to the note".
+                // But jumping from Outline to Notes might be jarring. 
+                // Let's only jump if page > 0 (already reading notes) OR manual add.
+            }
+
+            // 2. If Manual Add, Focus the input
+            if (manualAddTriggered.current) {
+                // Wait for render/flip
+                setTimeout(() => {
+                    // We need to set the page again here just in case logic above didn't trigger (e.g. same page)
+                    if (page !== targetPage) {
+                        setDirection('next');
+                        setPage(targetPage);
+                    }
+                    
+                    const newNoteId = notes[lastIndex].id;
+                    const el = document.getElementById(`note-input-${newNoteId}`);
+                    if (el) {
+                        el.focus();
+                    }
+                    manualAddTriggered.current = false;
+                }, page !== targetPage ? 900 : 100); // Longer wait if flipping
+            }
         }
-    }, [notes.length]);
+        prevNoteCount.current = notes.length;
+    }, [notes.length, page]);
+
 
     const handleNoteEdit = (id: string, newContent: string) => {
         const updated = notes.map(n => n.id === id ? { ...n, content: newContent } : n);
@@ -45,14 +90,9 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, outline, visible, onUpd
     };
 
     const addNote = () => {
+        manualAddTriggered.current = true; // Mark as user action
         const newNote = { id: crypto.randomUUID(), content: "" };
         onUpdateNote([...notes, newNote]);
-        // Auto jump to the new page if needed
-        const newMax = Math.ceil((notes.length + 1) / NOTES_PER_PAGE);
-        if (newMax > page) {
-            setDirection('next');
-            setPage(newMax);
-        }
     };
 
     const currentNotes = notes.slice((page - 1) * NOTES_PER_PAGE, page * NOTES_PER_PAGE);
@@ -238,6 +278,7 @@ const NotesView = ({ notes, page, onEdit }: { notes: NoteItem[], page: number, o
                     >
                         <span className="absolute -left-5 top-[14px] w-1.5 h-1.5 bg-[#78716c] rounded-full opacity-30 group-hover:opacity-100 transition-opacity"></span>
                         <div 
+                            id={`note-input-${note.id}`} // Added ID for focusing
                             contentEditable
                             suppressContentEditableWarning
                             onBlur={(e) => onEdit(note.id, e.currentTarget.textContent || "")}

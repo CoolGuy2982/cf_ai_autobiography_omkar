@@ -3,8 +3,8 @@ import { ChatInterface } from './ChatInterface';
 import { BookCanvas } from './BookCanvas';
 import { Notepad } from './Notepad';
 import { MapSelector } from './MapSelector';
-import { FinalizeBook } from './FinalizeBook'; // Import the new component
-import { PenTool, BookOpen, Bug, Map as MapIcon, RefreshCw, ArrowRight, XCircle, CheckCircle2, Download, PlusCircle } from 'lucide-react';
+import { FinalizeBook } from './FinalizeBook'; 
+import { PenTool, BookOpen, Bug, Map as MapIcon, RefreshCw, ArrowRight, XCircle, CheckCircle2, Download, PlusCircle, Terminal } from 'lucide-react';
 import { getWsUrl } from '../utils/api';
 
 interface WorkspaceProps {
@@ -28,30 +28,35 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
     const [isGenerating, setIsGenerating] = useState(false); 
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     
-    // Track chapter progress
     const [currentChapterIndex, setCurrentChapterIndex] = useState(1);
     
-    // Expansion State
     const [showExpandInput, setShowExpandInput] = useState(false);
     const [expandQuery, setExpandQuery] = useState("");
     const [isExpanding, setIsExpanding] = useState(false);
 
-    // Debug tools
     const [showDebug, setShowDebug] = useState(false);
     const [serverLogs, setServerLogs] = useState<string[]>([]);
+    const [lastError, setLastError] = useState<string | null>(null);
     
     const ws = useRef<WebSocket | null>(null);
 
-    // ... (WebSocket useEffect mostly same, but add handler for chapter_index_sync) ...
+    const logDebug = (msg: string) => {
+        console.log(`[App] ${msg}`);
+        setServerLogs(prev => [`[Client] ${msg}`, ...prev].slice(0, 100));
+    };
+
     useEffect(() => {
         if (!sessionId) return;
         if (ws.current?.readyState === WebSocket.OPEN) return; 
 
         const url = getWsUrl(sessionId);
+        logDebug(`Connecting to WS: ${url}`);
+        
         const socket = new WebSocket(url);
         ws.current = socket;
         
         socket.onopen = () => {
+            logDebug("WS Connected");
             setConnected(true);
             socket.send(JSON.stringify({ type: 'init' }));
         };
@@ -60,6 +65,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
             try {
                 const data = JSON.parse(event.data);
                 
+                if (data.type === 'debug_log') {
+                    console.log(`%c[Server] ${data.content}`, "color: orange");
+                    setServerLogs(prev => [`[Server] ${data.content}`, ...prev].slice(0, 100));
+                } else if (data.type === 'error') {
+                    console.error(`[Server Error] ${data.content}`);
+                    setLastError(data.content); 
+                    setServerLogs(prev => [`[ERROR] ${data.content}`, ...prev].slice(0, 100));
+                    setIsExpanding(false);
+                    setShowExpandInput(false);
+                    setShowDebug(true); 
+                } 
+
                 if (data.type === 'init') {
                     setMessages([]);
                     setNotes([]);
@@ -68,7 +85,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                 }
                 else if (data.type === 'outline') {
                     setOutline(data.content);
-                    // If we were expanding, we are done now
                     setIsExpanding(false);
                     setShowExpandInput(false);
                 }
@@ -78,9 +94,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                 else if (data.type === 'notes_sync') { setNotes(data.content); }
                 else if (data.type === 'mode_sync') {
                     setMode(data.content);
+                    // === FIX: Auto-switch view based on mode ===
                     if (data.content === 'writing') {
                         setViewMode('book');
                         setIsGenerating(true); 
+                    } else if (data.content === 'interview') {
+                        setViewMode('notepad'); // Auto-focus notes in interview
                     }
                 }
                 else if (data.type === 'draft_complete') { setIsGenerating(false); }
@@ -90,20 +109,33 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                 }
                 else if (data.type === 'response') {
                     setIsAnalyzing(false);
-                    setMessages(prev => [...prev, { role: data.role || 'assistant', content: data.content }]);
+                    setMessages(prev => {
+                        const last = prev[prev.length - 1];
+                        if (last && last.role === (data.role || 'assistant') && last.content === data.content) {
+                            return prev; 
+                        }
+                        return [...prev, { role: data.role || 'assistant', content: data.content }];
+                    });
                 }
                 else if (data.type === 'draft_chunk') {
                     if (data.reset) setManuscript(data.content);
                     else setManuscript(prev => prev + data.content);
                     if (viewMode !== 'book' && viewMode !== 'export') setViewMode('book');
                 }
-                else if (data.type === 'debug_log') {
-                    setServerLogs(prev => [data.content, ...prev].slice(0, 50));
-                }
             } catch (e) { console.error("WS Parse Error", e); }
         };
 
-        socket.onclose = () => { setConnected(false); ws.current = null; };
+        socket.onclose = (e) => { 
+            logDebug(`WS Closed: ${e.code} ${e.reason}`);
+            setConnected(false); 
+            ws.current = null;
+            setIsExpanding(false); 
+        };
+        socket.onerror = (e) => {
+            logDebug(`WS Error`);
+            console.error(e);
+        };
+
         return () => { if (socket.readyState === WebSocket.OPEN) socket.close(); ws.current = null; };
     }, [sessionId]);
 
@@ -113,8 +145,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
         ws.current.send(JSON.stringify({ type: 'message', content: text }));
     };
 
-    // ... (handleMapSelect, handleManualNoteUpdate, handleRetry, handleCancel SAME AS BEFORE) ...
-    // Placeholder for brevity unless requested, they are unchanged.
     const handleMapSelect = (lat: number, lng: number, placeName?: string) => {
         if (ws.current?.readyState === WebSocket.OPEN) {
             ws.current.send(JSON.stringify({ type: 'message', content: `[System: User location: ${placeName}]` }));
@@ -125,11 +155,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
         setNotes(updated);
         if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify({ type: 'update_notes', content: updated }));
     };
-    const handleRetry = () => { if(ws.current) { setIsGenerating(true); ws.current.send(JSON.stringify({ type: 'retry_chapter' })); } };
-    const handleCancel = () => { if(ws.current) { setIsGenerating(false); ws.current.send(JSON.stringify({ type: 'cancel_generation' })); } };
-
-
-    // === NEW LOGIC HANDLERS ===
+    const handleRetry = () => { 
+        setLastError(null);
+        if(ws.current) { setIsGenerating(true); ws.current.send(JSON.stringify({ type: 'retry_chapter' })); } 
+    };
+    const handleCancel = () => { 
+        if(ws.current) { setIsGenerating(false); ws.current.send(JSON.stringify({ type: 'cancel_generation' })); } 
+    };
 
     const handleNextChapter = () => {
         if (confirm("Move to the next chapter?")) {
@@ -145,16 +177,18 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
 
     const handleExpandOutline = () => {
         if (!expandQuery.trim()) return;
+        setLastError(null);
         setIsExpanding(true);
+        logDebug(`Sending expand_outline: ${expandQuery}`);
         if (ws.current?.readyState === WebSocket.OPEN) {
             ws.current.send(JSON.stringify({ type: 'expand_outline', instruction: expandQuery }));
+        } else {
+            setLastError("WebSocket not connected");
+            setIsExpanding(false);
         }
     };
 
-    // Helper: Are we at the end?
     const isEndOfBook = outline && currentChapterIndex > outline.chapters.length;
-
-    // === RENDER ===
 
     if (viewMode === 'export') {
         return <FinalizeBook manuscript={manuscript} bookTitle={bookTitle || "My Story"} onBack={() => setViewMode('book')} />;
@@ -162,7 +196,41 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
 
     return (
         <div className="flex h-screen w-screen overflow-hidden font-sans">
-            {/* LEFT PANEL */}
+            {showDebug && (
+                <div className="absolute top-0 right-0 bottom-0 w-96 bg-black/95 z-[100] border-l border-white/10 flex flex-col font-mono text-xs text-green-400 p-4 shadow-2xl">
+                    <div className="flex justify-between items-center mb-4 border-b border-white/10 pb-2">
+                        <span className="font-bold flex items-center gap-2"><Terminal size={14}/> System Logs</span>
+                        <button onClick={() => setShowDebug(false)} className="text-white/50 hover:text-white"><XCircle size={16}/></button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto space-y-2">
+                        {serverLogs.map((log, i) => (
+                            <div key={i} className="break-words border-b border-white/5 pb-1 mb-1">
+                                {log.replace('[Server]', '')}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {lastError && (
+                <div className="absolute top-6 left-1/2 -translate-x-1/2 z-[60] bg-red-900/90 text-white px-6 py-3 rounded-md shadow-2xl border border-red-500/50 flex items-center gap-4">
+                    <XCircle className="text-red-400" />
+                    <div>
+                        <p className="font-bold text-sm">Error</p>
+                        <p className="text-xs opacity-90">{lastError}</p>
+                    </div>
+                    <button onClick={() => setLastError(null)} className="ml-4 hover:bg-black/20 p-1 rounded">Dismiss</button>
+                </div>
+            )}
+
+            <button 
+                onClick={() => setShowDebug(!showDebug)} 
+                className={`absolute bottom-4 left-4 z-[60] p-2 rounded-full transition-all ${showDebug ? 'bg-green-900 text-white' : 'bg-black/40 text-white/20 hover:text-white'}`}
+                title="Open Debug Console"
+            >
+                <Bug size={16} />
+            </button>
+
             <div className="w-[450px] shrink-0 h-full relative z-50 transition-all shadow-[5px_0_30px_0_rgba(0,0,0,0.5)] bg-[#1c1917] flex flex-col">
                 <ChatInterface 
                     messages={messages} 
@@ -172,11 +240,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                     isAnalyzing={isAnalyzing || isExpanding}
                 /> 
 
-                {/* WRITING / END OF BOOK FOOTER */}
                 {(mode === 'writing' || isEndOfBook) && (
                     <div className="absolute bottom-0 left-0 right-0 bg-wood-dark/95 border-t border-white/10 p-6 backdrop-blur-md">
                         
-                        {/* 1. WRITING PROGRESS */}
                         {isGenerating && (
                             <div className="flex items-center gap-3 mb-4 text-amber-500 animate-pulse">
                                 <PenTool size={18} />
@@ -196,14 +262,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                             </div>
                         )}
 
-                        {/* 2. ACTIONS */}
                         <div className="flex flex-col gap-3">
                             {isGenerating ? (
                                 <button onClick={handleCancel} className="w-full py-3 px-4 rounded bg-stone-800 text-red-400 hover:text-red-300 transition-colors border border-white/5 uppercase text-xs font-bold tracking-wider">
                                     Cancel
                                 </button>
                             ) : isEndOfBook ? (
-                                // END OF BOOK ACTIONS
                                 <>
                                     {!showExpandInput ? (
                                         <div className="flex gap-3">
@@ -221,7 +285,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                                             </button>
                                         </div>
                                     ) : (
-                                        // EXPAND INPUT
                                         <div className="flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2">
                                             <textarea 
                                                 value={expandQuery}
@@ -248,7 +311,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                                     )}
                                 </>
                             ) : (
-                                // NORMAL CHAPTER FLOW
                                 <div className="flex gap-3">
                                     <button onClick={handleRetry} className="flex-1 py-3 px-4 rounded bg-stone-800 text-stone-300 hover:text-white border border-white/5 uppercase text-xs font-bold tracking-wider">
                                         Retry
@@ -263,11 +325,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
                 )}
             </div>
 
-            {/* RIGHT PANEL: Workspace Canvas */}
             <div className="flex-1 h-full relative flex flex-col bg-wood-pattern">
                 <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-black/20 via-transparent to-black/40 z-40" />
 
-                {/* Top Nav Switcher */}
                 <div className="absolute top-8 z-50 flex justify-center w-full pointer-events-none">
                     <div className="bg-black/40 backdrop-blur-md p-1.5 rounded-full flex gap-2 border border-white/10 shadow-xl pointer-events-auto">
                         <button onClick={() => setViewMode('notepad')} className={`flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all ${viewMode === 'notepad' ? 'bg-white text-stone-900 shadow-lg' : 'text-white/60 hover:text-white hover:bg-white/10'}`}>
@@ -294,8 +354,6 @@ export const Workspace: React.FC<WorkspaceProps> = ({ sessionId, bookTitle }) =>
 
                     <BookCanvas visible={viewMode === 'book'} content={manuscript} chapterTitle={bookTitle || "My Story"} isGenerating={isGenerating} />
                 </div>
-                
-                {/* Debug & Logs (Hidden for brevity) */}
             </div>
         </div>
     );

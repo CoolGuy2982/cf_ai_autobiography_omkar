@@ -1,6 +1,7 @@
 import React from 'react';
 import { ArrowLeft, Download } from 'lucide-react';
 import Markdown from 'react-markdown';
+import { BookCanvas } from './BookCanvas';
 
 interface FinalizeBookProps {
     manuscript: string;
@@ -15,72 +16,156 @@ export const FinalizeBook: React.FC<FinalizeBookProps> = ({ manuscript, bookTitl
     };
 
     return (
-        <div className="min-h-screen bg-[#f5f2eb] text-[#1c1917] font-serif relative overflow-auto">
-            {/* Navigation Header (Hidden on Print) */}
-            <div className="fixed top-0 left-0 right-0 h-16 bg-[#1c1917] text-[#f5f2eb] flex items-center justify-between px-8 z-50 print:hidden shadow-md">
+        <div className="min-h-screen bg-[#1c1917] relative overflow-hidden font-sans">
+            {/* ========================
+                SCREEN VIEW (INTERACTIVE)
+               ======================== */}
+            
+            {/* Background */}
+            <div className="absolute inset-0 pointer-events-none bg-wood-pattern opacity-100 z-0 print:hidden">
+                <div className="absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-black/50" />
+            </div>
+
+            {/* Header */}
+            <div className="fixed top-0 left-0 right-0 h-16 bg-black/40 backdrop-blur-md border-b border-white/10 text-[#f5f2eb] flex items-center justify-between px-8 z-50 print:hidden shadow-lg">
                 <button 
                     onClick={onBack}
                     className="flex items-center gap-2 hover:text-[#d97706] transition-colors font-sans text-sm font-bold uppercase tracking-wider"
                 >
                     <ArrowLeft size={18} /> Back to Studio
                 </button>
-                <h1 className="font-serif font-bold text-xl">{bookTitle}</h1>
+                
+                <div className="text-center">
+                    <h1 className="font-serif font-bold text-xl tracking-wide">{bookTitle}</h1>
+                    <span className="text-[10px] text-white/40 uppercase tracking-[0.2em] font-sans">Final Draft</span>
+                </div>
+
                 <button 
                     onClick={handlePrint}
-                    className="flex items-center gap-2 bg-[#d97706] text-white px-6 py-2 rounded-sm hover:bg-[#b45309] transition-colors font-sans text-xs font-bold uppercase tracking-wider shadow-lg"
+                    className="flex items-center gap-2 bg-[#d97706] text-white px-6 py-2 rounded-sm hover:bg-[#b45309] transition-colors font-sans text-xs font-bold uppercase tracking-wider shadow-lg hover:shadow-orange-900/20"
                 >
                     <Download size={16} /> Export PDF
                 </button>
             </div>
 
-            {/* Book Content (Printable Area) */}
-            <div className="max-w-3xl mx-auto pt-32 pb-32 px-12 print:p-0 print:max-w-none">
-                {/* Title Page */}
-                <div className="min-h-[80vh] flex flex-col justify-center items-center text-center mb-24 print:break-after-page print:min-h-screen print:justify-center">
-                    <h1 className="text-6xl font-bold mb-8 leading-tight">{bookTitle}</h1>
-                    <div className="w-24 h-1 bg-[#d97706] mb-8"></div>
-                    <p className="text-xl italic text-[#57534e]">An Autobiography</p>
-                </div>
-
-                {/* Chapters */}
-                <div className="prose prose-lg prose-stone max-w-none leading-relaxed text-justify">
-                    <Markdown components={{
-                        h1: ({children}) => {
-                            const text = String(children);
-                            const match = text.match(/Chapter\s+(\d+):?\s*(.*)/i);
-                            if (match) {
-                                return (
-                                    <div className="break-before-page mt-24 mb-12 text-center">
-                                        <span className="block font-sans text-sm font-bold uppercase tracking-[0.3em] text-[#78716c] mb-4">
-                                            Chapter {match[1]}
-                                        </span>
-                                        <h2 className="text-4xl font-bold text-[#1c1917] leading-tight">
-                                            {match[2]}
-                                        </h2>
-                                    </div>
-                                );
-                            }
-                            return <h2 className="text-3xl font-bold mt-16 mb-8 text-center">{children}</h2>;
-                        },
-                        p: ({children}) => <p className="mb-6 indent-8">{children}</p>
-                    }}>
-                        {manuscript}
-                    </Markdown>
-                </div>
-                
-                <div className="mt-32 text-center text-sm text-[#78716c] italic print:hidden">
-                    — End of Manuscript —
+            {/* 3D Reader */}
+            <div className="relative z-10 pt-20 h-screen flex items-center justify-center print:hidden">
+                <div className="scale-110"> 
+                    <BookCanvas 
+                        content={manuscript} 
+                        chapterTitle={bookTitle} 
+                        visible={true} 
+                        isGenerating={false} 
+                    />
                 </div>
             </div>
 
-            {/* Print Styles */}
+            {/* ========================
+                PRINT VIEW (PROFESSIONAL BOOK LAYOUT)
+               ======================== */}
+            
+            <div className="hidden print:block absolute inset-0 z-[100] bg-white text-black">
+                <div className="book-container">
+                    
+                    {/* Title Page */}
+                    <div className="title-page break-after-page flex flex-col justify-center items-center text-center h-[9in]">
+                        <div className="flex-1 flex flex-col justify-center">
+                            <h1 className="text-4xl font-serif font-bold mb-4 tracking-tight uppercase text-black">{bookTitle}</h1>
+                            <div className="w-12 h-1 bg-black mx-auto mb-6"></div>
+                            <p className="text-lg italic font-serif text-gray-600">An Autobiography</p>
+                        </div>
+                        <div className="pb-12 text-xs font-sans uppercase tracking-widest text-gray-400">
+                            Printed via Cloudflare AI
+                        </div>
+                    </div>
+
+                    {/* Copyright / Dedication Page (Optional) */}
+                    <div className="copyright-page break-after-page flex flex-col justify-end h-[9in] pb-12 pl-8">
+                        <p className="text-xs font-sans text-gray-500">
+                            Copyright © {new Date().getFullYear()}<br/>
+                            All rights reserved.<br/><br/>
+                            Generated by AI.
+                        </p>
+                    </div>
+
+                    {/* Book Content */}
+                    <div className="book-content font-serif leading-relaxed text-justify">
+                        <Markdown components={{
+                            h1: ({children}) => {
+                                const text = String(children);
+                                const match = text.match(/Chapter\s+(\d+):?\s*(.*)/i);
+                                if (match) {
+                                    return (
+                                        <div className="chapter-header break-before-page pt-24 mb-12 text-center">
+                                            <span className="block font-sans text-xs font-bold uppercase tracking-[0.2em] text-gray-500 mb-2">
+                                                Chapter {match[1]}
+                                            </span>
+                                            <h2 className="text-2xl font-bold text-black uppercase tracking-wide">
+                                                {match[2]}
+                                            </h2>
+                                        </div>
+                                    );
+                                }
+                                return <h2 className="text-2xl font-bold mt-12 mb-6 text-center text-black break-before-page pt-12">{children}</h2>;
+                            },
+                            // Justified paragraphs with indentation for that "Novel" look
+                            p: ({children}) => <p className="mb-0 indent-8 text-[11pt] leading-[1.6] text-black/90">{children}</p>,
+                            strong: ({children}) => <strong className="font-bold text-black">{children}</strong>,
+                            em: ({children}) => <em className="italic text-black">{children}</em>,
+                            ul: ({children}) => <ul className="list-disc pl-8 mb-4 space-y-1">{children}</ul>,
+                            li: ({children}) => <li className="pl-2">{children}</li>,
+                            blockquote: ({children}) => <blockquote className="border-l-2 border-gray-300 pl-4 italic my-4 ml-4 text-gray-700">{children}</blockquote>
+                        }}>
+                            {manuscript}
+                        </Markdown>
+                    </div>
+                </div>
+            </div>
+
+            {/* PROFESSIONAL PRINT CSS */}
             <style>{`
                 @media print {
-                    @page { margin: 2cm; }
-                    body { background: white; }
+                    /* SET STANDARD BOOK SIZE (6x9 inches) */
+                    @page {
+                        size: 6in 9in;
+                        margin: 0.75in 0.6in 0.75in 0.6in; /* Top Inner Bottom Outer */
+                    }
+
+                    body {
+                        background-color: white !important;
+                        color: black !important;
+                        font-family: "Crimson Pro", "Times New Roman", serif;
+                        -webkit-print-color-adjust: exact;
+                    }
+
+                    /* Hide screen UI */
                     .print\\:hidden { display: none !important; }
-                    .print\\:break-after-page { break-after: page; }
-                    .print\\:min-h-screen { min-height: 100vh; }
+                    
+                    /* Show Print UI */
+                    .print\\:block { 
+                        display: block !important; 
+                        position: relative !important;
+                        width: 100% !important;
+                        height: auto !important;
+                        overflow: visible !important;
+                    }
+
+                    /* Typography Tweaks */
+                    .book-content p {
+                        text-align: justify;
+                        text-justify: inter-word;
+                        orphans: 2;
+                        widows: 2;
+                    }
+
+                    /* Chapter Drops */
+                    .chapter-header {
+                        padding-top: 30%; /* Drop chapter title down the page */
+                    }
+
+                    /* Force page breaks */
+                    .break-after-page { page-break-after: always; }
+                    .break-before-page { page-break-before: always; }
                 }
             `}</style>
         </div>

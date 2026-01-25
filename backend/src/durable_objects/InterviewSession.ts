@@ -32,8 +32,8 @@ export class InterviewSession extends DurableObject {
     notes: NoteItem[] = [];
     mode: 'interview' | 'writing' = 'interview';
     
-    currentDraft: string = "";       
-    fullManuscript: string = "";     
+    currentDraft: string = "";        
+    fullManuscript: string = "";      
     currentChapterIndex: number = 1; 
 
     isProcessing: boolean = false;
@@ -93,6 +93,22 @@ export class InterviewSession extends DurableObject {
         this.broadcast({ type: 'debug_log', content: `[Server] ${message}` });
     }
 
+    // === NEW HELPER: STRICT DEDUPLICATION ===
+    async addMessageSafe(role: 'user' | 'assistant' | 'system' | 'tool', content: string): Promise<boolean> {
+        // Check the very last message. If it's identical, REFUSE to add.
+        if (this.history.length > 0) {
+            const lastMsg = this.history[this.history.length - 1];
+            if (lastMsg.role === role && lastMsg.content === content) {
+                this.broadcastLog("Prevented duplicate message insertion.");
+                return false;
+            }
+        }
+        
+        this.history.push({ role, content });
+        await this.state.storage.put("history", this.history);
+        return true;
+    }
+
     async fetch(request: Request): Promise<Response> {
         const url = new URL(request.url);
 
@@ -137,11 +153,10 @@ export class InterviewSession extends DurableObject {
                 await this.ensureStateLoaded();
                 await this.refreshBookContext();
 
+                // Send initial state
                 ws.send(JSON.stringify({ type: 'outline', content: this.bookContext }));
                 ws.send(JSON.stringify({ type: 'notes_sync', content: this.notes }));
                 ws.send(JSON.stringify({ type: 'mode_sync', content: this.mode }));
-                
-                // IMPORTANT: Send current index so frontend knows if we are at the end
                 ws.send(JSON.stringify({ type: 'chapter_index_sync', content: this.currentChapterIndex }));
 
                 const totalText = this.fullManuscript + (this.fullManuscript && this.currentDraft ? "\n\n" : "") + this.currentDraft;
@@ -153,25 +168,32 @@ export class InterviewSession extends DurableObject {
                      ws.send(JSON.stringify({ type: 'draft_complete' }));
                 }
 
-                if (this.history.length === 0 && this.mode === 'interview') {
-                    const contextSnippet = await this.gatherFullContext(ws);
-                    const currentChapter = this.bookContext?.chapters?.find((c: any) => c.index === this.currentChapterIndex);
-                    
-                    if (currentChapter) {
-                        const opening = `Hello! We are working on **Chapter ${this.currentChapterIndex}: ${currentChapter?.title || 'Untitled'}**. ${currentChapter?.summary || ''}\n\n${this.currentChapterIndex === 1 ? "To begin, tell me about how this part of your life started?" : "Ready to move on to this next phase?"}`;
-                        this.history.push({ role: 'assistant', content: opening });
-                        await this.state.storage.put("history", this.history);
-                        ws.send(JSON.stringify({ type: 'response', content: opening, role: 'assistant' }));
+                // Handle Greeting - Using Safe Add
+                if (this.mode === 'interview') {
+                    if (this.history.length === 0) {
+                        const contextSnippet = await this.gatherFullContext(ws);
+                        
+                        const currentChapter = this.bookContext?.chapters?.find((c: any) => c.index === this.currentChapterIndex);
+                        if (currentChapter) {
+                            const opening = `Hello! We are working on **Chapter ${this.currentChapterIndex}: ${currentChapter?.title || 'Untitled'}**. ${currentChapter?.summary || ''}\n\n${this.currentChapterIndex === 1 ? "To begin, tell me about how this part of your life started?" : "Ready to move on to this next phase?"}`;
+                            
+                            // === ATOMIC CHECK ===
+                            // Only broadcast if we actually added a new message
+                            const added = await this.addMessageSafe('assistant', opening);
+                            if (added) {
+                                this.broadcast({ type: 'response', content: opening, role: 'assistant' });
+                            } else {
+                                this.sendHistory(ws);
+                            }
+                        }
+                    } else {
+                        this.sendHistory(ws);
                     }
                 } else {
-                    const visibleHistory = this.history
-                        .filter(m => m.content && (m.role === 'user' || m.role === 'assistant'))
-                        .map(m => ({ role: m.role, content: m.content }));
-                    ws.send(JSON.stringify({ type: 'history', content: visibleHistory }));
+                    this.sendHistory(ws);
                 }
             } 
             else if (data.type === 'expand_outline') {
-                // === NEW: Handle Outline Expansion ===
                 const { instruction } = data;
                 await this.runOutlineExpander(instruction);
             }
@@ -208,18 +230,25 @@ export class InterviewSession extends DurableObject {
             }
             else if (data.type === 'message') {
                 if (this.isProcessing || this.mode === 'writing') return;
-                this.history.push({ role: 'user', content: data.content });
-                await this.state.storage.put("history", this.history);
-                await this.processTurn(ws);
+                
+                // User messages also need deduping
+                const added = await this.addMessageSafe('user', data.content);
+                if (added) {
+                    await this.processTurn(ws);
+                }
             }
         } catch (err: any) {
             console.error("WS Error", err);
+            this.broadcast({ type: 'error', content: "Server Error: " + err.message });
         }
     }
 
-    // ... (refreshBookContext, processTurn, runInterviewerAgent, gatherFullContext SAME AS BEFORE) ... 
-    // I will explicitly include them for completeness in the final file artifact if requested, 
-    // but here I focus on the NEW function:
+    sendHistory(ws: WebSocket) {
+        const visibleHistory = this.history
+            .filter(m => m.content && (m.role === 'user' || m.role === 'assistant'))
+            .map(m => ({ role: m.role, content: m.content }));
+        ws.send(JSON.stringify({ type: 'history', content: visibleHistory }));
+    }
 
     async refreshBookContext() {
         if (!this.bookId) return;
@@ -246,7 +275,6 @@ export class InterviewSession extends DurableObject {
     }
 
     async runInterviewerAgent(ws: WebSocket) {
-        // ... (Same tools as before)
         const tools = [
             { name: "create_note", description: "Create a new note.", parameters: { type: "OBJECT", properties: { content: { type: "STRING" } }, required: ["content"] } },
             { name: "finalize_interview", description: "End interview.", parameters: { type: "OBJECT", properties: {}, required: [] } }
@@ -300,9 +328,11 @@ export class InterviewSession extends DurableObject {
                     this.broadcast({ type: 'notes_sync', content: this.notes });
                 } else {
                     const text = response.text || "...";
-                    this.history.push({ role: 'assistant', content: text });
-                    await this.state.storage.put("history", this.history);
-                    this.broadcast({ type: 'response', content: text, role: 'assistant' });
+                    // === USE SAFE ADD ===
+                    const added = await this.addMessageSafe('assistant', text);
+                    if (added) {
+                        this.broadcast({ type: 'response', content: text, role: 'assistant' });
+                    }
                     keepGoing = false;
                 }
             } catch (e: any) { keepGoing = false; }
@@ -326,7 +356,6 @@ export class InterviewSession extends DurableObject {
         } catch (e) { return ""; }
     }
 
-    // === NEW: EXPAND OUTLINE AGENT ===
     async runOutlineExpander(userInstruction: string) {
         this.broadcastLog("Expanding outline...");
         
@@ -352,26 +381,30 @@ export class InterviewSession extends DurableObject {
         const currentOutlineStr = JSON.stringify(this.bookContext?.chapters || []);
         const nextIndex = (this.bookContext?.chapters?.length || 0) + 1;
 
-        const systemPrompt = `You are a helpful editor.
-        === CURRENT OUTLINE ===
-        ${currentOutlineStr}
-        
-        === USER REQUEST ===
-        "${userInstruction}"
-        
-        TASK: Generate NEW chapters to continue the story, starting at index ${nextIndex}.
-        Use the 'append_chapters' tool to return them.
-        `;
+        const manualContents = [{
+            role: "user",
+            parts: [{
+                text: `You are a helpful editor.
+                === CURRENT OUTLINE ===
+                ${currentOutlineStr}
+                
+                === USER REQUEST ===
+                "${userInstruction}"
+                
+                TASK: Generate NEW chapters to continue the story, starting at index ${nextIndex}.
+                You MUST use the 'append_chapters' tool to return them.`
+            }]
+        }];
 
         try {
-            const response = await this.callGemini(systemPrompt, tools);
+            const response = await this.callGemini("", tools, manualContents);
             const calls = response.functionCalls || [];
+            let expanded = false;
             
             for (const call of calls) {
                 if (call.name === 'append_chapters') {
                     const { new_chapters } = call.args;
                     if (new_chapters && Array.isArray(new_chapters)) {
-                        // Add IDs and Indices
                         let currentIndex = nextIndex;
                         const formattedChapters = new_chapters.map((c: any) => ({
                             index: currentIndex++,
@@ -379,27 +412,51 @@ export class InterviewSession extends DurableObject {
                             summary: c.summary
                         }));
                         
-                        // Update State
                         this.bookContext.chapters = [...this.bookContext.chapters, ...formattedChapters];
                         await this.state.storage.put("bookContext", this.bookContext);
                         
-                        // Save to DB
                         await this.env.DB.prepare("UPDATE books SET outline_json = ? WHERE id = ?")
                             .bind(JSON.stringify(this.bookContext), this.bookId).run();
 
-                        // Notify Frontend
-                        this.broadcast({ type: 'outline', content: this.bookContext });
                         this.broadcastLog(`Added ${formattedChapters.length} new chapters.`);
+
+                        this.history = []; 
+                        this.mode = 'interview';
+                        this.notes = [];
+                        
+                        await this.state.storage.put("history", this.history);
+                        await this.state.storage.put("mode", this.mode);
+                        await this.state.storage.put("notes", this.notes);
+
+                        this.broadcast({ type: 'outline', content: this.bookContext }); 
+                        this.broadcast({ type: 'mode_sync', content: this.mode });
+                        this.broadcast({ type: 'notes_sync', content: this.notes });
+                        
+                        const newChapter = formattedChapters[0];
+                        const opening = `Hello! We are working on **Chapter ${this.currentChapterIndex}: ${newChapter.title}**. ${newChapter.summary}\n\nReady to get started?`;
+                        
+                        // === SAFE ADD FOR EXPANSION GREETING ===
+                        await this.addMessageSafe('assistant', opening);
+                        
+                        // Use history broadcast to force sync and remove any duplicates
+                        this.sendHistory(null as any); 
+                        
+                        expanded = true;
+                        break; 
                     }
                 }
             }
+            if (!expanded) {
+                this.broadcastLog("AI generated no chapters.");
+                this.broadcast({ type: 'error', content: "AI did not generate any new chapters." });
+            }
         } catch (e: any) {
             this.broadcastLog(`Expansion Error: ${e.message}`);
+            this.broadcast({ type: 'error', content: "Expansion Failed: " + e.message });
         }
     }
 
     async runWriterAgent() {
-        // ... (Same as before)
         this.broadcastLog("Writing chapter...");
         const fullContext = await this.gatherFullContext();
         const currentChapter = this.bookContext?.chapters?.find((c: any) => c.index === this.currentChapterIndex);
@@ -419,7 +476,6 @@ export class InterviewSession extends DurableObject {
     }
 
     async resetForNextChapter() {
-        // ... (Save to DB, update indices)
         const chapterId = crypto.randomUUID();
         const currentChapter = this.bookContext?.chapters?.find((c: any) => c.index === this.currentChapterIndex);
         const title = currentChapter?.title || `Chapter ${this.currentChapterIndex}`;
@@ -428,7 +484,7 @@ export class InterviewSession extends DurableObject {
 
         this.fullManuscript += (this.fullManuscript ? "\n\n" : "") + this.currentDraft;
         this.currentDraft = "";
-        this.currentChapterIndex += 1; // Increment Index
+        this.currentChapterIndex += 1; 
 
         this.history = [];
         this.notes = [];   
@@ -441,13 +497,18 @@ export class InterviewSession extends DurableObject {
         await this.state.storage.put("fullManuscript", this.fullManuscript);
         await this.state.storage.put("currentChapterIndex", this.currentChapterIndex);
         
-        // Broadcast new index so frontend knows if we are at the end
         this.broadcast({ type: 'chapter_index_sync', content: this.currentChapterIndex });
-        this.broadcast({ type: 'init' });
+        
+        // Trigger safe greeting for next chapter
+        const newChapter = this.bookContext?.chapters?.find((c: any) => c.index === this.currentChapterIndex);
+        if (newChapter) {
+             const opening = `Hello! We are working on **Chapter ${this.currentChapterIndex}: ${newChapter.title}**. ${newChapter.summary}\n\nReady to move on?`;
+             await this.addMessageSafe('assistant', opening);
+             this.broadcast({ type: 'response', content: opening, role: 'assistant' });
+        }
     }
 
     async streamGemini(prompt: string) {
-        // ... (Standard stream implementation)
         const response = await fetch(`https://gateway.ai.cloudflare.com/v1/${this.config.accountId}/${this.config.gatewayId}/google-ai-studio/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.config.geminiKey, ...(this.config.aigToken ? { 'cf-aig-authorization': `Bearer ${this.config.aigToken}` } : {}) },
@@ -456,11 +517,18 @@ export class InterviewSession extends DurableObject {
         const reader = response.body?.getReader();
         const decoder = new TextDecoder();
         if (!reader) return;
+
+        let buffer = "";
+
         while(true) {
             const {done, value} = await reader.read();
             if (done) break;
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\n');
+
+            buffer += decoder.decode(value, { stream: true });
+            
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || "";
+
             for(const line of lines) {
                 if(line.startsWith('data: ')) {
                     try {
@@ -476,26 +544,49 @@ export class InterviewSession extends DurableObject {
         }
     }
 
-    async callGemini(systemInstruction: string, tools?: any[]) {
-        // ... (Standard call implementation)
+    async callGemini(systemInstruction: string, tools?: any[], manualContents?: any[]) {
+        if (!this.config.accountId || !this.config.gatewayId || !this.config.geminiKey) {
+            throw new Error("Missing Cloudflare/Gemini credentials in Durable Object storage.");
+        }
+
         const url = `https://gateway.ai.cloudflare.com/v1/${this.config.accountId}/${this.config.gatewayId}/google-ai-studio/v1beta/models/gemini-2.5-flash:generateContent`;
+        
+        const contents = manualContents || this.history.map(m => ({ 
+            role: m.role === 'assistant' ? 'model' : m.role === 'tool' ? 'function' : 'user', 
+            parts: m.functionResponse ? [{functionResponse: m.functionResponse}] : m.functionCall ? [{functionCall: m.functionCall}] : [{text: m.content}] 
+        }));
+
         const body: any = { 
-            contents: this.history.map(m => ({ 
-                role: m.role === 'assistant' ? 'model' : m.role === 'tool' ? 'function' : 'user', 
-                parts: m.functionResponse ? [{functionResponse: m.functionResponse}] : m.functionCall ? [{functionCall: m.functionCall}] : [{text: m.content}] 
-            })), 
-            system_instruction: { parts: [{ text: systemInstruction }] } 
+            contents,
+            system_instruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined 
         };
         if (tools) body.tools = [{ function_declarations: tools }];
-        const resp = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.config.geminiKey, ...(this.config.aigToken ? { 'cf-aig-authorization': `Bearer ${this.config.aigToken}` } : {}) },
-            body: JSON.stringify(body)
-        });
-        const data: any = await resp.json();
-        return {
-            text: data.candidates?.[0]?.content?.parts?.[0]?.text,
-            functionCalls: data.candidates?.[0]?.content?.parts?.filter((p:any) => p.functionCall).map((p:any) => p.functionCall)
-        };
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000); 
+
+        try {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.config.geminiKey, ...(this.config.aigToken ? { 'cf-aig-authorization': `Bearer ${this.config.aigToken}` } : {}) },
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!resp.ok) {
+                const errText = await resp.text();
+                throw new Error(`Gemini API Failed (${resp.status}): ${errText}`);
+            }
+
+            const data: any = await resp.json();
+            return {
+                text: data.candidates?.[0]?.content?.parts?.[0]?.text,
+                functionCalls: data.candidates?.[0]?.content?.parts?.filter((p:any) => p.functionCall).map((p:any) => p.functionCall)
+            };
+        } catch (e) {
+            clearTimeout(timeoutId);
+            throw e;
+        }
     }
 }
