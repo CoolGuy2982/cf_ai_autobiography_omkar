@@ -3,23 +3,20 @@ import { MapContainer, TileLayer, Marker, useMapEvents, useMap } from 'react-lea
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { cn } from '../utils/cn';
-
 // Fix for default marker icon in leaflet with bundlers
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
-
 let DefaultIcon = L.icon({
     iconUrl: icon,
     shadowUrl: iconShadow,
     iconSize: [25, 41],
     iconAnchor: [12, 41]
 });
-
 L.Marker.prototype.options.icon = DefaultIcon;
 
 interface MapSelectorProps {
     onLocationSelect: (lat: number, lng: number, placeName?: string) => void;
-    active?: boolean; 
+    active?: boolean;
     className?: string;
 }
 
@@ -52,7 +49,6 @@ function LocationMarker({ onSelect }: { onSelect: (lat: number, lng: number, pla
 
             try {
                 // --- ATTEMPT 1: OpenStreetMap Nominatim ---
-                // We use a AbortController to timeout if it hangs
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 3000);
 
@@ -81,14 +77,12 @@ function LocationMarker({ onSelect }: { onSelect: (lat: number, lng: number, pla
 
             } catch (err) {
                 console.warn("Primary geocode failed, trying backup service...", err);
-                
                 // --- ATTEMPT 2: BigDataCloud (Reliable Backup) ---
                 try {
                     const backupUrl = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`;
                     const res2 = await fetch(backupUrl);
                     if (res2.ok) {
                         const data2 = await res2.json();
-                        // BDC returns: city, locality, principalSubdivision (State), countryName
                         const city = data2.city || data2.locality;
                         const state = data2.principalSubdivision;
                         const country = data2.countryName;
@@ -102,7 +96,6 @@ function LocationMarker({ onSelect }: { onSelect: (lat: number, lng: number, pla
             }
 
             // 3. Final Callback
-            // If both failed, we fall back to coordinates, but the UI will likely prefer the string if available.
             onSelect(lat, lng, placeName || `${lat.toFixed(4)}, ${lng.toFixed(4)}`);
         },
     });
@@ -116,8 +109,9 @@ export const MapSelector: React.FC<MapSelectorProps> = ({ onLocationSelect, acti
     return (
         <div className={cn("rounded-xl overflow-hidden shadow-lg border border-slate-200 bg-slate-100", className || "h-[400px] w-full")}>
             <MapContainer 
-                center={[20, 78]} 
-                zoom={4} 
+                center={[20, 0]} // Global Center
+                zoom={2} // Zoomed out to see the world
+                minZoom={2}
                 scrollWheelZoom={true} 
                 style={{ height: '100%', width: '100%' }}
             >
