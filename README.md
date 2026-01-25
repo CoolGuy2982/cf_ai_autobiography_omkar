@@ -1,6 +1,6 @@
 # Cloudflare AI Autobiography
 
-An AI-powered autobiography writer that interviews you and drafts your life story using **Gemini 3 Flash** on Cloudflare Workers.
+An AI-powered autobiography writer that interviews you and drafts your life story using **Gemini 2.5 Flash** on Cloudflare Workers.
 
 Try it here: https://364fd2ab.omkar-ai-bio.pages.dev/
 
