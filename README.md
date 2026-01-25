@@ -2,6 +2,8 @@
 
 An AI-powered autobiography writer that interviews you and drafts your life story using **Gemini 3 Flash** on Cloudflare Workers.
 
+Try it here: https://364fd2ab.omkar-ai-bio.pages.dev/
+
 ## Features
 - **Interactive Onboarding**: Pin your birth location on a 3D-like map.
 - **Document Analysis**: Upload PDFs (Resumes, Journals) to give the AI context.
@@ -48,4 +50,4 @@ npx wrangler pages deploy dist
 - **Backend API**: Hono on Cloudflare Workers.
 - **Storage**: R2 for PDF text, D1 for relational data.
 - **State**: Durable Objects (`InterviewSession`) for WebSocket chat state.
-- **AI**: Gemini 3 Flash via Cloudflare AI Gateway.
+- **AI**: Gemini 2.5 Flash via Cloudflare AI Gateway.
