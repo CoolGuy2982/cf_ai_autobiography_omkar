@@ -128,14 +128,19 @@ export const Notepad: React.FC<NotepadProps> = ({ notes, outline, visible, onUpd
 
     return (
         <motion.div 
-            initial={{ x: -50, opacity: 0 }} 
+            initial={{ x: -20, y: 10, opacity: 0, rotate: 0 }} 
             animate={{ 
-                x: visible ? 0 : -50, 
+                x: visible ? 0 : -20, 
+                y: visible ? 24 : 10, // Moved down slightly (~24px)
+                rotate: visible ? 1.5 : 0, // Slight 1.5 degree tilt
                 opacity: visible ? 1 : 0,
                 display: visible ? 'flex' : 'none'
             }}
-            transition={{ duration: 0.6 }}
-            className="w-full max-w-[550px] h-[80vh] flex flex-col relative perspective-[2000px]"
+            transition={{ 
+                duration: 0.7, 
+                ease: [0.2, 0.8, 0.2, 1] // "Apple-esque" cubic bezier for a natural settle
+            }}
+            className="w-full max-w-[550px] h-[80vh] flex flex-col relative perspective-[2000px] origin-top"
         >
             {/* === 1. THE HEADER (Leather Binding) === */}
             <div className="h-16 bg-[#1c1917] rounded-t-md shadow-xl z-30 relative flex items-center justify-between px-6 border-b border-[#3a3532] shrink-0">
